@@ -1,0 +1,19 @@
+# Environnement Python
+.venv/
+
+# Fichiers temporaires Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Paramètres et secrets locaux
+.env
+
+# Modèle volumineux téléchargé
+models/
+
+# Résultats générés
+outputs/
+
+# Fiches d'emploi potentiellement confidentielles
+data/
