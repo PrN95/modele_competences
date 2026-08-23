@@ -7,7 +7,8 @@ from src.domain import (
     CoupleEmplois,
     ResultatAnalyseCouple,
 )
-from src.matching import analyser_correspondance
+from src.embeddings import EncodeurCompetences
+from src.matching import analyser_correspondance, generer_correspondances_semantiques
 from src.recommendations import determiner_besoin_formation
 
 
@@ -50,6 +51,16 @@ def analyser_couple(
         ecart_moyen_normalise=ecart_moyen_normalise,
         besoin_collectif=besoin_collectif,
     )
+
+
+def analyser_couple_semantiquement(
+    couple: CoupleEmplois,
+    encodeur: EncodeurCompetences,
+) -> ResultatAnalyseCouple:
+    """Rapproche les compétences puis délègue tous les calculs à la phase 2."""
+
+    correspondances = generer_correspondances_semantiques(couple, encodeur)
+    return analyser_couple(couple, correspondances)
 
 
 def _valider_couple(couple: CoupleEmplois) -> None:

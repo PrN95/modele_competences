@@ -10,4 +10,4 @@ def test_competence_text_uses_only_title_and_description() -> None:
     )
 
     assert competence.texte == "Intitulé fictif. Description fictive"
-
+    assert str(competence.niveau) not in competence.texte
