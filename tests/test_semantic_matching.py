@@ -12,18 +12,18 @@ from src.scoring import analyser_couple_semantiquement
 
 
 def competence(identifier: str, niveau: int = 2) -> Competence:
-    return Competence(identifier, identifier, "Description fictive", niveau)
+    return Competence(identifier, "Description fictive", niveau, id=identifier)
 
 
 def emploi(identifier: str, job_type: str, skills, effectif=None) -> Emploi:
     return Emploi(
-        id=identifier,
         intitule=identifier,
         type=job_type,
         effectif=effectif,
         competences=tuple(skills),
         fichier_source=f"{identifier}.xlsx",
         feuille_source="Competences",
+        id=identifier,
     )
 
 
@@ -137,4 +137,3 @@ def test_recognized_candidate_is_transmitted_to_phase_two() -> None:
     assert result.correspondances[0].niveau_actuel == 3
     assert result.score_global == 1.0
     assert result.besoins_formation == ()
-

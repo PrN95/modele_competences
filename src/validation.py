@@ -101,19 +101,13 @@ def validate_competences_dataframe(
                 ValidationDiagnostic(
                     fichier=fichier_nom,
                     feuille=feuille,
-                    colonne="competence_id",
+                    colonne="competence_intitule",
                     regle="le fichier doit contenir au moins une compétence",
                 )
             ]
         )
 
-    text_columns = (
-        "emploi_id",
-        "emploi_intitule",
-        "competence_id",
-        "competence_intitule",
-        "competence_description",
-    )
+    text_columns = ("emploi_intitule", "competence_intitule")
     valid_text_rows: dict[str, set[int]] = {column: set() for column in text_columns}
 
     for index, row in dataframe.iterrows():
@@ -155,18 +149,10 @@ def validate_competences_dataframe(
                     feuille=feuille,
                     ligne_excel=excel_row,
                     colonne="competence_niveau",
-                    regle="entier obligatoire compris entre 1 et 3",
+                    regle="entier obligatoire compris entre 1 et 4",
                 )
             )
 
-    _validate_constant_column(
-        dataframe,
-        "emploi_id",
-        fichier_nom,
-        feuille,
-        diagnostics,
-        valid_text_rows["emploi_id"],
-    )
     _validate_constant_column(
         dataframe,
         "emploi_intitule",
@@ -187,13 +173,6 @@ def validate_competences_dataframe(
             if value in EMPLOI_TYPES
         },
     )
-    _validate_competence_ids(
-        dataframe,
-        fichier_nom,
-        feuille,
-        diagnostics,
-        valid_text_rows["competence_id"],
-    )
     effectifs = _validate_effectif(dataframe, fichier_nom, feuille, diagnostics)
 
     first_type = dataframe.iloc[0]["emploi_type"]
@@ -213,23 +192,23 @@ def validate_competences_dataframe(
 
     competences = tuple(
         Competence(
-            id=row["competence_id"],
             intitule=row["competence_intitule"],
-            description=row["competence_description"],
+            description=_optional_text(row.get("competence_description")),
             niveau=int(row["competence_niveau"]),
+            id=_optional_text(row.get("competence_id")),
         )
         for _, row in dataframe.iterrows()
     )
     effectif = effectifs[0] if effectifs else None
 
     return Emploi(
-        id=dataframe.iloc[0]["emploi_id"],
         intitule=dataframe.iloc[0]["emploi_intitule"],
         type=first_type,
         effectif=effectif,
         competences=competences,
         fichier_source=fichier_nom,
         feuille_source=feuille,
+        id=_optional_text(dataframe.iloc[0].get("emploi_id")),
     )
 
 
@@ -257,33 +236,10 @@ def _validate_constant_column(
             )
 
 
-def _validate_competence_ids(
-    dataframe: pd.DataFrame,
-    fichier: str,
-    feuille: str,
-    diagnostics: list[ValidationDiagnostic],
-    valid_rows: set[int],
-) -> None:
-    seen: dict[str, int] = {}
-    for index, value in dataframe["competence_id"].items():
-        row_index = int(index)
-        if row_index not in valid_rows:
-            continue
-        if value in seen:
-            diagnostics.append(
-                ValidationDiagnostic(
-                    fichier=fichier,
-                    feuille=feuille,
-                    ligne_excel=_excel_row(row_index),
-                    colonne="competence_id",
-                    regle=(
-                        "identifiant obligatoire et unique dans le fichier; "
-                        f"déjà présent à la ligne Excel {_excel_row(seen[value])}"
-                    ),
-                )
-            )
-        else:
-            seen[value] = row_index
+def _optional_text(value: Any) -> str | None:
+    if _is_missing(value):
+        return None
+    return str(value).strip()
 
 
 def _validate_effectif(
@@ -365,4 +321,3 @@ def _validate_effectif(
                 )
 
     return converted
-

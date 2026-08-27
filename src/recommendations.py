@@ -11,15 +11,20 @@ def determiner_besoin_formation(
     if correspondance.statut == "niveau_suffisant":
         return None
 
-    motif = (
-        "competence_absente"
-        if correspondance.statut == "absente"
-        else "niveau_insuffisant"
-    )
+    if correspondance.statut == "absente":
+        motif = "competence_absente"
+        recommandation = "formation_complete"
+    else:
+        motif = "niveau_insuffisant"
+        recommandation = (
+            "progression_un_niveau"
+            if correspondance.ecart_niveau == 1
+            else "parcours_formation_important"
+        )
     return BesoinFormation(
         competence_cible=correspondance.competence_cible,
         niveau_depart=correspondance.niveau_actuel,
         niveau_cible=correspondance.niveau_requis,
         motif=motif,
+        recommandation=recommandation,
     )
-

@@ -1,5 +1,6 @@
 """Calcul d'une correspondance à partir de scores déjà fournis."""
 
+from dataclasses import dataclass
 from fractions import Fraction
 from math import isfinite
 from numbers import Real
@@ -7,9 +8,12 @@ from collections.abc import Mapping, Sequence
 
 from src.config import DENSE_WEIGHT, SEMANTIC_MATCH_THRESHOLD, SPARSE_WEIGHT
 from src.domain import (
+    Competence,
     CorrespondanceCompetence,
     CorrespondanceFournie,
     CoupleEmplois,
+    Emploi,
+    SignalementCompetenceActuelle,
     StatutCorrespondance,
 )
 from src.embeddings import EncodeurCompetences
@@ -104,6 +108,130 @@ def generer_correspondances_semantiques(
         correspondances.append(meilleure)
 
     return tuple(correspondances)
+
+
+@dataclass(frozen=True, slots=True)
+class _CandidateInverse:
+    emploi_cible: Emploi
+    competence_cible: Competence
+    score_dense: float
+    score_sparse: float
+    score_hybride: float
+
+
+def controler_competences_actuelles_non_reprises(
+    emploi_actuel: Emploi,
+    emplois_cibles: Sequence[Emploi],
+    emplois_cibles_selectionnes: Sequence[Emploi],
+    encodeur: EncodeurCompetences,
+) -> tuple[SignalementCompetenceActuelle, ...]:
+    """Signale les compétences actuelles absentes des cibles sélectionnées.
+
+    Ce calcul inverse produit uniquement des informations de restitution. Il
+    ne reçoit ni ne modifie les résultats de scoring ou de sélection.
+    """
+
+    cibles = tuple(emplois_cibles)
+    selectionnees = tuple(emplois_cibles_selectionnes)
+    if emploi_actuel.type != "actuel":
+        raise ValueError("Le contrôle inverse exige un emploi de type 'actuel'.")
+    if not emploi_actuel.competences:
+        return ()
+    if not cibles or not selectionnees:
+        raise ValueError("Les cibles analysées et sélectionnées sont obligatoires.")
+    if any(cible.type != "cible" or not cible.competences for cible in cibles):
+        raise ValueError("Chaque cible analysée doit contenir des compétences.")
+    if any(
+        not any(selectionnee is cible for cible in cibles)
+        for selectionnee in selectionnees
+    ):
+        raise ValueError("Une cible sélectionnée n'a pas été analysée.")
+
+    def est_selectionnee(cible: Emploi) -> bool:
+        return any(cible is item for item in selectionnees)
+
+    encodage_actuel = encodeur.encoder(emploi_actuel.competences)
+    candidats_par_actuelle: list[list[_CandidateInverse]] = [
+        [] for _ in emploi_actuel.competences
+    ]
+
+    for cible in cibles:
+        encodage_cible = encodeur.encoder(cible.competences)
+        for actuel_index in range(len(emploi_actuel.competences)):
+            for cible_index, competence_cible in enumerate(cible.competences):
+                score_dense = calculer_score_dense(
+                    encodage_actuel.vecteurs_dense[actuel_index],
+                    encodage_cible.vecteurs_dense[cible_index],
+                )
+                score_sparse = calculer_score_sparse(
+                    encodage_actuel.poids_sparse[actuel_index],
+                    encodage_cible.poids_sparse[cible_index],
+                )
+                candidats_par_actuelle[actuel_index].append(
+                    _CandidateInverse(
+                        emploi_cible=cible,
+                        competence_cible=competence_cible,
+                        score_dense=score_dense,
+                        score_sparse=score_sparse,
+                        score_hybride=calculer_score_hybride(score_dense, score_sparse),
+                    )
+                )
+
+    signalements: list[SignalementCompetenceActuelle] = []
+    for competence_actuelle, candidats in zip(
+        emploi_actuel.competences, candidats_par_actuelle
+    ):
+        candidats_selectionnes = tuple(
+            item for item in candidats if est_selectionnee(item.emploi_cible)
+        )
+        meilleure_selectionnee = max(
+            candidats_selectionnes, key=lambda item: item.score_hybride
+        )
+        if _score_hybride_exact(
+            meilleure_selectionnee.score_dense,
+            meilleure_selectionnee.score_sparse,
+        ) >= SEMANTIC_MATCH_THRESHOLD:
+            continue
+
+        candidats_autres = tuple(
+            item for item in candidats if not est_selectionnee(item.emploi_cible)
+        )
+        meilleure_autre = (
+            max(candidats_autres, key=lambda item: item.score_hybride)
+            if candidats_autres
+            else None
+        )
+        presente_autre = meilleure_autre is not None and _score_hybride_exact(
+            meilleure_autre.score_dense,
+            meilleure_autre.score_sparse,
+        ) >= SEMANTIC_MATCH_THRESHOLD
+
+        if presente_autre:
+            meilleure = meilleure_autre
+            type_non_reprise = "presente_dans_une_autre_cible"
+            message = (
+                "compétence actuelle absente de l'emploi cible sélectionné, "
+                "mais présente dans une autre cible"
+            )
+        else:
+            meilleure = max(candidats, key=lambda item: item.score_hybride)
+            type_non_reprise = "absente_de_toutes_les_cibles"
+            message = "compétence actuelle non reprise dans les emplois cibles analysés"
+
+        signalements.append(
+            SignalementCompetenceActuelle(
+                competence_actuelle=competence_actuelle,
+                type_non_reprise=type_non_reprise,
+                meilleure_competence_cible=meilleure.competence_cible,
+                meilleur_emploi_cible=meilleure.emploi_cible,
+                score_dense=meilleure.score_dense,
+                score_sparse=meilleure.score_sparse,
+                score_hybride=meilleure.score_hybride,
+                message=message,
+            )
+        )
+
+    return tuple(signalements)
 
 
 def calculer_score_dense(

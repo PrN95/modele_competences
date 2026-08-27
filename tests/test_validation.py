@@ -25,11 +25,8 @@ def test_target_empty_effectif_becomes_none(valid_target_rows) -> None:
 @pytest.mark.parametrize(
     ("column", "value"),
     [
-        ("emploi_id", "   "),
         ("emploi_intitule", "\t"),
-        ("competence_id", " "),
         ("competence_intitule", "\n"),
-        ("competence_description", "   "),
     ],
 )
 def test_whitespace_only_text_is_rejected(valid_current_rows, column, value) -> None:
@@ -45,26 +42,35 @@ def test_whitespace_only_text_is_rejected(valid_current_rows, column, value) -> 
     assert "espaces" in diagnostic.regle
 
 
-def test_emploi_id_must_be_constant(valid_current_rows) -> None:
-    valid_current_rows[1]["emploi_id"] = "EMP-ACT-02"
+def test_identifier_columns_are_optional(valid_current_rows) -> None:
+    dataframe = pd.DataFrame(valid_current_rows).drop(
+        columns=["emploi_id", "competence_id"]
+    )
 
-    with pytest.raises(ExcelValidationError) as caught:
-        validate_competences_dataframe(pd.DataFrame(valid_current_rows), "ids.xlsx")
+    emploi = validate_competences_dataframe(dataframe, "sans_ids.xlsx")
 
-    diagnostic = next(item for item in caught.value.diagnostics if item.colonne == "emploi_id")
-    assert diagnostic.ligne_excel == 3
-    assert "identique" in diagnostic.regle
+    assert emploi.id is None
+    assert all(competence.id is None for competence in emploi.competences)
 
 
-def test_competence_id_must_be_unique(valid_current_rows) -> None:
-    valid_current_rows[1]["competence_id"] = valid_current_rows[0]["competence_id"]
+def test_blank_identifiers_are_treated_as_absent(valid_current_rows) -> None:
+    for row in valid_current_rows:
+        row["emploi_id"] = " "
+        row["competence_id"] = None
 
-    with pytest.raises(ExcelValidationError) as caught:
-        validate_competences_dataframe(pd.DataFrame(valid_current_rows), "doublon.xlsx")
+    emploi = validate_competences_dataframe(pd.DataFrame(valid_current_rows), "ids_vides.xlsx")
 
-    diagnostic = next(item for item in caught.value.diagnostics if item.colonne == "competence_id")
-    assert diagnostic.ligne_excel == 3
-    assert "ligne Excel 2" in diagnostic.regle
+    assert emploi.id is None
+    assert all(competence.id is None for competence in emploi.competences)
+
+
+def test_description_is_optional(valid_current_rows) -> None:
+    dataframe = pd.DataFrame(valid_current_rows).drop(columns=["competence_description"])
+
+    emploi = validate_competences_dataframe(dataframe, "sans_description.xlsx")
+
+    assert emploi.competences[0].description is None
+    assert emploi.competences[0].texte == emploi.competences[0].intitule
 
 
 @pytest.mark.parametrize("effectif", [None, 0, -1, 1.5, "12"])
@@ -109,8 +115,16 @@ def test_target_effectif_cannot_mix_empty_and_populated_rows(valid_target_rows) 
     assert any("vide partout" in item.regle for item in caught.value.diagnostics)
 
 
-@pytest.mark.parametrize("niveau", [0, 4, 1.5, "2", None])
-def test_competence_level_must_be_an_integer_from_one_to_three(valid_current_rows, niveau) -> None:
+def test_expertise_level_is_accepted(valid_current_rows) -> None:
+    valid_current_rows[0]["competence_niveau"] = 4
+
+    emploi = validate_competences_dataframe(pd.DataFrame(valid_current_rows), "expertise.xlsx")
+
+    assert emploi.competences[0].niveau == 4
+
+
+@pytest.mark.parametrize("niveau", [-1, 0, 5, 1.5, "2", None])
+def test_competence_level_must_be_an_integer_from_one_to_four(valid_current_rows, niveau) -> None:
     valid_current_rows[0]["competence_niveau"] = niveau
 
     with pytest.raises(ExcelValidationError) as caught:
@@ -129,26 +143,23 @@ def test_job_type_must_be_exact(valid_current_rows) -> None:
 
 
 def test_missing_required_column_is_rejected(valid_current_rows) -> None:
-    dataframe = pd.DataFrame(valid_current_rows).drop(columns=["competence_description"])
+    dataframe = pd.DataFrame(valid_current_rows).drop(columns=["competence_intitule"])
 
     with pytest.raises(ExcelValidationError) as caught:
         validate_competences_dataframe(dataframe, "colonne.xlsx")
 
     diagnostic = caught.value.diagnostics[0]
-    assert diagnostic.colonne == "competence_description"
+    assert diagnostic.colonne == "competence_intitule"
     assert diagnostic.ligne_excel is None
     assert "colonne obligatoire absente" == diagnostic.regle
 
 
 def test_empty_sheet_is_rejected() -> None:
     columns = [
-        "emploi_id",
         "emploi_intitule",
         "emploi_type",
         "emploi_effectif",
-        "competence_id",
         "competence_intitule",
-        "competence_description",
         "competence_niveau",
     ]
 
@@ -170,4 +181,3 @@ def test_diagnostic_string_contains_all_context(valid_current_rows) -> None:
     assert "ligne Excel=2" in message
     assert "colonne='competence_niveau'" in message
     assert "règle non respectée:" in message
-

@@ -1,7 +1,10 @@
-"""Objets métier indépendants de l'interface et du format Excel."""
+"""Objets métier indépendants de l'interface et du format d'entrée."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from numbers import Integral
 from typing import Literal
+
+from src.config import COMPETENCE_LEVELS
 
 
 EmploiType = Literal["actuel", "cible"]
@@ -11,34 +14,44 @@ EmploiType = Literal["actuel", "cible"]
 class Competence:
     """Compétence et niveau requis ou détenu pour un emploi."""
 
-    id: str
     intitule: str
-    description: str
+    description: str | None
     niveau: int
+    id: str | None = field(default=None, compare=False)
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.niveau, bool)
+            or not isinstance(self.niveau, Integral)
+            or self.niveau not in COMPETENCE_LEVELS
+        ):
+            raise ValueError("Le niveau d'une compétence doit être compris entre 1 et 4.")
 
     @property
     def texte(self) -> str:
         """Texte qui sera ultérieurement envoyé au modèle d'encodage."""
 
-        return f"{self.intitule}. {self.description}"
+        if self.description and self.description.strip():
+            return f"{self.intitule}. {self.description}"
+        return self.intitule
 
 
 @dataclass(frozen=True, slots=True)
 class Emploi:
-    """Profil type chargé depuis un unique fichier Excel."""
+    """Profil type chargé depuis une source structurée."""
 
-    id: str
     intitule: str
     type: EmploiType
     effectif: int | None
     competences: tuple[Competence, ...]
     fichier_source: str
-    feuille_source: str
+    feuille_source: str | None
+    id: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
 class CoupleEmplois:
-    """Premier incrément : un emploi actuel et un emploi cible."""
+    """Un emploi actuel et un emploi cible à comparer."""
 
     actuel: Emploi
     cible: Emploi
@@ -46,6 +59,15 @@ class CoupleEmplois:
 
 StatutCorrespondance = Literal["absente", "niveau_insuffisant", "niveau_suffisant"]
 MotifFormation = Literal["competence_absente", "niveau_insuffisant"]
+TypeRecommandation = Literal[
+    "formation_complete",
+    "progression_un_niveau",
+    "parcours_formation_important",
+]
+TypeNonReprise = Literal[
+    "presente_dans_une_autre_cible",
+    "absente_de_toutes_les_cibles",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +111,7 @@ class BesoinFormation:
     niveau_depart: int
     niveau_cible: int
     motif: MotifFormation
+    recommandation: TypeRecommandation
 
     @property
     def ecart_niveau(self) -> int:
@@ -105,6 +128,35 @@ class ResultatAnalyseCouple:
     besoins_formation: tuple[BesoinFormation, ...]
     couverture_semantique: float
     score_global: float
-    ecart_moyen_normalise: float
-    besoin_collectif: float
+    ecart_moyen: float
 
+
+@dataclass(frozen=True, slots=True)
+class ResultatSelectionCibles:
+    """Classement et meilleure(s) cible(s) d'un emploi actuel."""
+
+    analyses_classees: tuple[ResultatAnalyseCouple, ...]
+    meilleures_analyses: tuple[ResultatAnalyseCouple, ...]
+    alerte: str | None
+
+    @property
+    def ex_aequo(self) -> bool:
+        return len(self.meilleures_analyses) > 1
+
+    @property
+    def emplois_cibles_selectionnes(self) -> tuple[Emploi, ...]:
+        return tuple(analyse.emploi_cible for analyse in self.meilleures_analyses)
+
+
+@dataclass(frozen=True, slots=True)
+class SignalementCompetenceActuelle:
+    """Compétence actuelle absente de la ou des cibles sélectionnées."""
+
+    competence_actuelle: Competence
+    type_non_reprise: TypeNonReprise
+    meilleure_competence_cible: Competence | None
+    meilleur_emploi_cible: Emploi | None
+    score_dense: float | None
+    score_sparse: float | None
+    score_hybride: float | None
+    message: str

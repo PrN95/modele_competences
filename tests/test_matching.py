@@ -6,7 +6,12 @@ from src.matching import analyser_correspondance, calculer_score_hybride
 
 
 def competence(identifier: str, niveau: int) -> Competence:
-    return Competence(identifier, f"Compétence fictive {identifier}", "Description fictive", niveau)
+    return Competence(
+        intitule=f"Compétence fictive {identifier}",
+        description="Description fictive",
+        niveau=niveau,
+        id=identifier,
+    )
 
 
 def test_weights_and_threshold_are_exact_fractions() -> None:
@@ -95,6 +100,20 @@ def test_absent_competence_has_level_zero_and_full_gap() -> None:
     assert result.niveau_actuel == 0
     assert result.ecart_niveau == 3
     assert result.statut == "absente"
+
+
+def test_expertise_target_gap_is_calculated_after_semantic_matching() -> None:
+    result = analyser_correspondance(
+        CorrespondanceFournie(
+            competence("CIBLE", 4),
+            competence("ACTUELLE", 1),
+            0.8,
+            0.8,
+        )
+    )
+
+    assert result.reconnue is True
+    assert result.ecart_niveau == 3
 
 
 def test_recognized_match_requires_current_competence() -> None:

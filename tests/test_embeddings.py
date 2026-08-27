@@ -22,7 +22,7 @@ class FauxModele:
 
 
 def competence(niveau: int = 3) -> Competence:
-    return Competence("C-1", "Intitulé fictif", "Description fictive", niveau)
+    return Competence("Intitulé fictif", "Description fictive", niveau, id="C-1")
 
 
 def test_missing_local_model_directory_is_rejected(tmp_path: Path) -> None:

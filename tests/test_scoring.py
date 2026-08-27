@@ -5,18 +5,23 @@ from src.scoring import analyser_couple
 
 
 def competence(identifier: str, niveau: int) -> Competence:
-    return Competence(identifier, f"Compétence fictive {identifier}", "Description fictive", niveau)
+    return Competence(
+        intitule=f"Compétence fictive {identifier}",
+        description="Description fictive",
+        niveau=niveau,
+        id=identifier,
+    )
 
 
 def emploi(identifier: str, job_type: str, skills, effectif=None) -> Emploi:
     return Emploi(
-        id=identifier,
         intitule=f"Emploi fictif {identifier}",
         type=job_type,
         effectif=effectif,
         competences=tuple(skills),
         fichier_source=f"{identifier}.xlsx",
         feuille_source="Competences",
+        id=identifier,
     )
 
 
@@ -46,11 +51,8 @@ def test_complete_manually_verifiable_example() -> None:
     # Reconnues: 2/3. Niveau suffisant: 1/3.
     assert result.couverture_semantique == pytest.approx(2 / 3)
     assert result.score_global == pytest.approx(1 / 3)
-    # Contributions D_n: absente 3/3 = 1, insuffisante 1/2, suffisante 0/2 = 0.
-    assert result.ecart_moyen_normalise == pytest.approx((1 + 0.5 + 0) / 3)
-    assert result.ecart_moyen_normalise == pytest.approx(0.5)
-    assert result.besoin_collectif == pytest.approx(24 * 0.5)
-    assert result.besoin_collectif == pytest.approx(12.0)
+    # Ecart_moyen_ef = (3 + 1 + 0) / 3, sans normalisation par niveau requis.
+    assert result.ecart_moyen == pytest.approx(4 / 3)
     assert [item.statut for item in result.correspondances] == [
         "absente",
         "niveau_insuffisant",
@@ -108,3 +110,33 @@ def test_results_follow_target_competence_order() -> None:
         "CIB-1",
         "CIB-2",
     ]
+
+
+def test_scoring_does_not_depend_on_optional_identifiers() -> None:
+    actuelle = Competence("Compétence actuelle", None, 2)
+    cible = Competence("Compétence cible", None, 3)
+    pair = CoupleEmplois(
+        actuel=Emploi(
+            "Emploi actuel",
+            "actuel",
+            None,
+            (actuelle,),
+            "actuel.pdf",
+            None,
+        ),
+        cible=Emploi(
+            "Emploi cible",
+            "cible",
+            None,
+            (cible,),
+            "cible.pdf",
+            None,
+        ),
+    )
+
+    result = analyser_couple(
+        pair, (CorrespondanceFournie(cible, actuelle, 0.8, 0.8),)
+    )
+
+    assert result.score_global == 0.0
+    assert result.ecart_moyen == 1.0
