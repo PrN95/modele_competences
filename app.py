@@ -9,21 +9,325 @@ from typing import Sequence
 from src.config import MODEL_PATH, SEUIL_COUV, SEUIL_SIM
 from src.domain import (
     Competence,
+    CorrespondanceCompetence,
     Emploi,
-    CoupleEmplois,
     ResultatAnalyseCouple,
     ResultatSelectionCibles,
-    SignalementCompetenceActuelle,
 )
 from src.embeddings import AdaptateurBGEM3, SortieEncodage, EncodeurCompetences
 from src.io_pdf import read_emploi_pdf, PDFExtractionError
-from src.scoring import (
-    analyser_couple_semantiquement,
-    selectionner_cibles,
-    MESSAGE_AUCUNE_CIBLE,
-    MESSAGE_ARBITRAGE_RH,
+from src.orchestration import (
+    ResultatOrchestration,
+    orchestrer_emplois,
 )
+from src.scoring import MESSAGE_AUCUNE_CIBLE, MESSAGE_ARBITRAGE_RH
 from src.matching import controler_competences_actuelles_non_reprises
+
+
+def cle_couple_emplois(analyse: ResultatAnalyseCouple) -> tuple[int, int]:
+    """Identifie un couple sans comparer les copies enrichies de l'analyse."""
+
+    return (id(analyse.emploi_actuel), id(analyse.emploi_cible))
+
+
+def indexer_analyses_selectionnees(
+    selection: ResultatSelectionCibles,
+) -> dict[tuple[int, int], ResultatAnalyseCouple]:
+    """Indexe toutes les cibles retenues, y compris les triples ex aequo."""
+
+    return {
+        cle_couple_emplois(analyse): analyse
+        for analyse in selection.meilleures_analyses
+    }
+
+
+def recommandation_pour_correspondance(
+    analyse_selectionnee: ResultatAnalyseCouple | None,
+    competence_cible: Competence,
+) -> str:
+    """Retourne une recommandation uniquement pour une analyse sélectionnée."""
+
+    if analyse_selectionnee is None:
+        return ""
+    besoin = next(
+        (
+            item
+            for item in analyse_selectionnee.besoins_formation
+            if item.competence_cible is competence_cible
+            or item.competence_cible == competence_cible
+        ),
+        None,
+    )
+    return besoin.commentaire if besoin is not None else ""
+
+
+def libelle_competence_actuelle_la_plus_proche(
+    correspondance: CorrespondanceCompetence,
+) -> str:
+    """Présente la candidate sans la faire passer pour une correspondance reconnue."""
+
+    actuelle = correspondance.competence_actuelle
+    if actuelle is None:
+        return "N/A"
+    if not correspondance.reconnue:
+        return f"{actuelle.intitule} (plus proche, non reconnue)"
+    return actuelle.intitule
+
+
+def construire_details_competences(
+    analyse_selectionnee: ResultatAnalyseCouple,
+    *,
+    seuil_sim: float = float(SEUIL_SIM),
+) -> list[dict[str, object]]:
+    """Construit la restitution détaillée d'une cible réellement retenue."""
+
+    details: list[dict[str, object]] = []
+    for correspondance in analyse_selectionnee.correspondances:
+        details.append(
+            {
+                "Compétence Cible": correspondance.competence_cible.intitule,
+                "Niveau Cible": correspondance.niveau_requis,
+                "Compétence actuelle la plus proche": (
+                    libelle_competence_actuelle_la_plus_proche(correspondance)
+                ),
+                "Niveau Actuel": (
+                    correspondance.niveau_actuel
+                    if correspondance.reconnue
+                    else "N/A"
+                ),
+                "Score Dense (D_ac)": f"{correspondance.score_dense:.4f}",
+                "Score Sparse (L_ac)": f"{correspondance.score_sparse:.4f}",
+                "Score Hybride (H_ac)": f"{correspondance.score_hybride:.4f}",
+                "Seuil de similarité utilisé": seuil_sim,
+                "Reconnue": "Oui" if correspondance.reconnue else "Non",
+                "Écart Niveau": (
+                    correspondance.ecart_niveau
+                    if correspondance.reconnue
+                    else "N/A"
+                ),
+                "Statut": correspondance.statut.replace("_", " ").title(),
+                "Détail Égalité": correspondance.detail_egalite or "",
+                "Recommandation de Formation": recommandation_pour_correspondance(
+                    analyse_selectionnee,
+                    correspondance.competence_cible,
+                ),
+            }
+        )
+    return details
+
+
+def construire_lignes_export(
+    selection: ResultatSelectionCibles,
+    *,
+    seuil_sim: float,
+    seuil_couv: float,
+) -> list[dict[str, object]]:
+    """Exporte toutes les analyses, sans recommander les cibles non retenues."""
+
+    selectionnees = indexer_analyses_selectionnees(selection)
+    lignes: list[dict[str, object]] = []
+    for analyse in selection.analyses_classees:
+        analyse_selectionnee = selectionnees.get(cle_couple_emplois(analyse))
+        est_selectionnee = analyse_selectionnee is not None
+        for correspondance in analyse.correspondances:
+            lignes.append(
+                {
+                    "Emploi_Actuel": analyse.emploi_actuel.intitule,
+                    "Fichier_Source_Actuel": analyse.emploi_actuel.fichier_source,
+                    "Emploi_Cible": analyse.emploi_cible.intitule,
+                    "Fichier_Source_Cible": analyse.emploi_cible.fichier_source,
+                    "Seuil_Sim": seuil_sim,
+                    "Seuil_Couv": seuil_couv,
+                    "G_ef_Couverture": float(analyse.g_ef),
+                    "Gs_ef_Satisfaction": float(analyse.gs_ef),
+                    "Ecart_Moyen_ef": float(analyse.ecart_moyen),
+                    "Est_Admissible": analyse.admissible,
+                    "Est_Selectionne": est_selectionnee,
+                    "Competence_Cible": correspondance.competence_cible.intitule,
+                    "Niveau_Cible": correspondance.niveau_requis,
+                    "Compétence actuelle la plus proche": (
+                        libelle_competence_actuelle_la_plus_proche(correspondance)
+                    ),
+                    "Niveau_Actuel": (
+                        correspondance.niveau_actuel
+                        if correspondance.reconnue
+                        else "N/A"
+                    ),
+                    "Score_Dense_D_ac": correspondance.score_dense,
+                    "Score_Sparse_L_ac": correspondance.score_sparse,
+                    "Score_Hybride_H_ac": correspondance.score_hybride,
+                    "Reconnue": correspondance.reconnue,
+                    "Ecart_Niveau": (
+                        correspondance.ecart_niveau
+                        if correspondance.reconnue
+                        else "N/A"
+                    ),
+                    "Statut": (
+                        "Absente"
+                        if not correspondance.reconnue
+                        else correspondance.statut
+                    ),
+                    "Detail_Egalite": correspondance.detail_egalite or "",
+                    "Recommandation_Formation": recommandation_pour_correspondance(
+                        analyse_selectionnee,
+                        correspondance.competence_cible,
+                    ),
+                }
+            )
+    return lignes
+
+
+def construire_synthese_orchestration(
+    resultat: ResultatOrchestration,
+) -> list[dict[str, object]]:
+    """Construit une ligne de synthèse par emploi actuel."""
+
+    lignes: list[dict[str, object]] = []
+    for resultat_emploi in resultat.resultats_emplois:
+        retenues = resultat_emploi.cibles_retenues
+        if not retenues:
+            lignes.append(
+                {
+                    "Emploi_Actuel": resultat_emploi.emploi_actuel.intitule,
+                    "Fichier_Source_Actuel": resultat_emploi.emploi_actuel.fichier_source,
+                    "Emplois_Cibles_Retenus": "",
+                    "Statut": MESSAGE_AUCUNE_CIBLE,
+                    "G_epfq": None,
+                    "Gs_epfq": None,
+                    "Ecart_Moyen_epfq": None,
+                    "R_epfq": None,
+                    "Seuil_Sim": resultat.seuil_sim,
+                    "Seuil_Couv": resultat.seuil_couv,
+                }
+            )
+            continue
+
+        analyse_reference = retenues[0].analyse
+        lignes.append(
+            {
+                "Emploi_Actuel": resultat_emploi.emploi_actuel.intitule,
+                "Fichier_Source_Actuel": resultat_emploi.emploi_actuel.fichier_source,
+                "Emplois_Cibles_Retenus": " | ".join(
+                    cible.analyse.emploi_cible.intitule for cible in retenues
+                ),
+                "Statut": (
+                    MESSAGE_ARBITRAGE_RH if len(retenues) > 1 else "Retenu"
+                ),
+                "G_epfq": float(analyse_reference.g_ef),
+                "Gs_epfq": float(analyse_reference.gs_ef),
+                "Ecart_Moyen_epfq": float(analyse_reference.ecart_moyen),
+                "R_epfq": " | ".join(
+                    f"{cible.analyse.emploi_cible.intitule}: {cible.r_epfq:.2%}"
+                    for cible in retenues
+                ),
+                "Seuil_Sim": resultat.seuil_sim,
+                "Seuil_Couv": resultat.seuil_couv,
+            }
+        )
+    return lignes
+
+
+def construire_matrice_couples(
+    resultat: ResultatOrchestration,
+) -> list[dict[str, object]]:
+    """Exporte les indicateurs de chaque couple de la matrice complète."""
+
+    lignes: list[dict[str, object]] = []
+    for resultat_emploi in resultat.resultats_emplois:
+        reutilisation_par_cible = {
+            cle_couple_emplois(cible.analyse): cible.r_epfq
+            for cible in resultat_emploi.cibles_retenues
+        }
+        for analyse in resultat_emploi.selection.analyses_classees:
+            cle = cle_couple_emplois(analyse)
+            est_selectionnee = cle in reutilisation_par_cible
+            lignes.append(
+                {
+                    "Emploi_Actuel": analyse.emploi_actuel.intitule,
+                    "Fichier_Source_Actuel": analyse.emploi_actuel.fichier_source,
+                    "Emploi_Cible": analyse.emploi_cible.intitule,
+                    "Fichier_Source_Cible": analyse.emploi_cible.fichier_source,
+                    "G_epfq": float(analyse.g_ef),
+                    "Gs_epfq": float(analyse.gs_ef),
+                    "Ecart_Moyen_epfq": float(analyse.ecart_moyen),
+                    "Est_Admissible": analyse.admissible,
+                    "Est_Selectionne": est_selectionnee,
+                    "R_epfq": (
+                        reutilisation_par_cible[cle] if est_selectionnee else None
+                    ),
+                    "Seuil_Sim": resultat.seuil_sim,
+                    "Seuil_Couv": resultat.seuil_couv,
+                }
+            )
+    return lignes
+
+
+def construire_details_orchestration(
+    resultat: ResultatOrchestration,
+) -> list[dict[str, object]]:
+    """Exporte les détails et recommandations des seules cibles retenues."""
+
+    lignes: list[dict[str, object]] = []
+    for resultat_emploi in resultat.resultats_emplois:
+        for cible_retenue in resultat_emploi.cibles_retenues:
+            analyse = cible_retenue.analyse
+            for correspondance in analyse.correspondances:
+                lignes.append(
+                    {
+                        "Emploi_Actuel": analyse.emploi_actuel.intitule,
+                        "Fichier_Source_Actuel": analyse.emploi_actuel.fichier_source,
+                        "Emploi_Cible_Retenu": analyse.emploi_cible.intitule,
+                        "Fichier_Source_Cible": analyse.emploi_cible.fichier_source,
+                        "G_epfq": float(analyse.g_ef),
+                        "Gs_epfq": float(analyse.gs_ef),
+                        "Ecart_Moyen_epfq": float(analyse.ecart_moyen),
+                        "R_epfq": cible_retenue.r_epfq,
+                        "Seuil_Sim": resultat.seuil_sim,
+                        "Seuil_Couv": resultat.seuil_couv,
+                        "Competence_Cible": correspondance.competence_cible.intitule,
+                        "Niveau_Cible": correspondance.niveau_requis,
+                        "Compétence actuelle la plus proche": (
+                            libelle_competence_actuelle_la_plus_proche(
+                                correspondance
+                            )
+                        ),
+                        "Niveau_Actuel": (
+                            correspondance.niveau_actuel
+                            if correspondance.reconnue
+                            else "N/A"
+                        ),
+                        "Score_Dense_D_ac": correspondance.score_dense,
+                        "Score_Sparse_L_ac": correspondance.score_sparse,
+                        "Score_Hybride_H_ac": correspondance.score_hybride,
+                        "Reconnue": correspondance.reconnue,
+                        "Ecart_Niveau": (
+                            correspondance.ecart_niveau
+                            if correspondance.reconnue
+                            else "N/A"
+                        ),
+                        "Statut": (
+                            "Absente"
+                            if not correspondance.reconnue
+                            else correspondance.statut
+                        ),
+                        "Detail_Egalite": correspondance.detail_egalite or "",
+                        "Recommandation_Formation": (
+                            recommandation_pour_correspondance(
+                                analyse,
+                                correspondance.competence_cible,
+                            )
+                        ),
+                    }
+                )
+    return lignes
+
+
+def convertir_csv(lignes: list[dict[str, object]]) -> str:
+    """Sérialise des lignes consolidées en CSV UTF-8 avec BOM."""
+
+    buffer = io.StringIO()
+    pd.DataFrame(lignes).to_csv(buffer, index=False, encoding="utf-8-sig")
+    return buffer.getvalue()
 
 
 class FauxEncodeurStreamlit:
@@ -74,12 +378,14 @@ def main():
     st.title("PoC Aide à la Décision RH")
     st.subheader("Rapprochement sémantique d'emplois, scoring et recommandations de formation")
 
-    # Barre latérale : Configuration du modèle
-    st.sidebar.header("Configuration du Modèle")
+    st.sidebar.header("Configuration du modèle")
     mode_encodeur = st.sidebar.selectbox(
         "Moteur d'encodage sémantique",
-        ["Faux Encodeur (Démo/Tests)", "Modèle BGE-M3 Local"],
-        help="Permet d'utiliser un simulateur d'embeddings si le modèle BGE-M3 n'est pas présent localement.",
+        ["Modèle BGE-M3 Local", "Faux Encodeur (Démo/Tests)"],
+        help=(
+            "Le modèle BGE-M3 local est le mode normal. Le faux encodeur est "
+            "réservé aux démonstrations et aux tests explicites."
+        ),
     )
 
     chemin_modele = st.sidebar.text_input(
@@ -88,7 +394,6 @@ def main():
         disabled=(mode_encodeur == "Faux Encodeur (Démo/Tests)"),
     )
 
-    # Initialisation de l'encodeur
     encodeur: EncodeurCompetences | None = None
     if mode_encodeur == "Modèle BGE-M3 Local":
         try:
@@ -96,57 +401,71 @@ def main():
             st.sidebar.success("Modèle BGE-M3 configuré.")
         except Exception as e:
             st.sidebar.error(f"Erreur de configuration du modèle : {e}")
-            st.sidebar.info("Utilisation temporaire du Faux Encodeur de secours.")
-            encodeur = charger_encodeur_fictif()
+            st.error(
+                "Le mode normal exige le modèle BGE-M3 local. Corrigez son "
+                "chemin ou choisissez explicitement le mode de démonstration."
+            )
+            return
     else:
         encodeur = charger_encodeur_fictif()
         st.sidebar.info("Mode Faux Encodeur (Démo) actif.")
 
-    # Affichage des seuils configurés
     st.sidebar.markdown("---")
-    st.sidebar.markdown(f"**Seuils appliqués (config) :**")
-    st.sidebar.markdown(f"- Seuil de similarité (\(seuil\_sim\)) : `{float(SEUIL_SIM):.2f}`")
-    st.sidebar.markdown(f"- Seuil de couverture (\(seuil\_couv\)) : `{float(SEUIL_COUV):.2f}`")
+    st.sidebar.markdown("**Seuils configurables :**")
+    seuil_sim = st.sidebar.slider(
+        "Seuil de similarité compétence (seuil_sim)",
+        min_value=0.0,
+        max_value=1.0,
+        value=float(SEUIL_SIM),
+        step=0.05,
+    )
+    seuil_couv = st.sidebar.slider(
+        "Seuil de couverture sémantique (seuil_couv)",
+        min_value=0.0,
+        max_value=1.0,
+        value=float(SEUIL_COUV),
+        step=0.05,
+    )
 
-    # Zone de chargement des PDF
     st.markdown("### 1. Chargement des documents PDF structurés")
     col_actuel, col_cible = st.columns(2)
 
     with col_actuel:
-        st.markdown("#### Zone Emploi Actuel")
+        st.markdown("#### Emplois actuels")
         fichiers_actuels = st.file_uploader(
-            "Télécharger le ou les PDF d'emploi actuel",
+            "Déposer un ou plusieurs PDF d'emplois actuels",
             type=["pdf"],
             accept_multiple_files=True,
             key="pdf_actuel",
         )
 
     with col_cible:
-        st.markdown("#### Zone Métier Cible")
+        st.markdown("#### Emplois cibles")
         fichiers_cibles = st.file_uploader(
-            "Télécharger le ou les PDF de métier cible",
+            "Déposer un ou plusieurs PDF d'emplois cibles",
             type=["pdf"],
             accept_multiple_files=True,
             key="pdf_cible",
         )
 
     if not fichiers_actuels or not fichiers_cibles:
-        st.info("Veuillez charger au moins un emploi actuel et un métier cible pour démarrer l'analyse.")
+        st.info(
+            "Veuillez charger au moins un emploi actuel et un emploi cible "
+            "pour démarrer l'analyse."
+        )
         return
 
-    # Phase d'extraction des PDF
     emplois_actuels: list[Emploi] = []
     emplois_cibles: list[Emploi] = []
 
-    # Extraction des emplois actuels
     for f in fichiers_actuels:
+        tmp_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
                 tmp.write(f.read())
                 tmp_path = Path(tmp.name)
-            
+
             emploi = read_emploi_pdf(tmp_path, document_type="emploi_actuel")
-            # Restaurer le vrai nom du fichier original dans les métadonnées
             emploi = Emploi(
                 intitule=emploi.intitule,
                 type=emploi.type,
@@ -157,21 +476,22 @@ def main():
                 id=emploi.id,
             )
             emplois_actuels.append(emploi)
-            tmp_path.unlink()
         except PDFExtractionError as err:
             st.error(f"Erreur d'extraction pour le fichier actuel '{f.name}' : {err}")
         except Exception as e:
             st.error(f"Erreur inattendue pour '{f.name}' : {e}")
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
 
-    # Extraction des métiers cibles
     for f in fichiers_cibles:
+        tmp_path = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
                 tmp.write(f.read())
                 tmp_path = Path(tmp.name)
-            
+
             emploi = read_emploi_pdf(tmp_path, document_type="metier_cible")
-            # Restaurer le vrai nom du fichier original dans les métadonnées
             emploi = Emploi(
                 intitule=emploi.intitule,
                 type=emploi.type,
@@ -182,244 +502,133 @@ def main():
                 id=emploi.id,
             )
             emplois_cibles.append(emploi)
-            tmp_path.unlink()
         except PDFExtractionError as err:
             st.error(f"Erreur d'extraction pour le fichier cible '{f.name}' : {err}")
         except Exception as e:
             st.error(f"Erreur inattendue pour '{f.name}' : {e}")
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
 
     if not emplois_actuels or not emplois_cibles:
         st.warning("Échec de l'extraction des profils. Veuillez vérifier les fichiers PDF.")
         return
 
     st.success(
-        f"Extraction réussie : {len(emplois_actuels)} profil(s) actuel(s) et {len(emplois_cibles)} métier(s) cible(s) disponible(s)."
+        f"Extraction réussie : {len(emplois_actuels)} emploi(s) actuel(s) et "
+        f"{len(emplois_cibles)} emploi(s) cible(s)."
     )
 
-    # Sélection de l'emploi actuel à analyser s'il y en a plusieurs
     st.markdown("---")
-    st.markdown("### 2. Analyse du rapprochement")
-    
-    if len(emplois_actuels) > 1:
-        options_actuels = {f"{e.intitule} ({e.fichier_source})": e for e in emplois_actuels}
-        selection_actuel_label = st.selectbox(
-            "Sélectionner l'emploi actuel à analyser",
-            list(options_actuels.keys()),
-        )
-        emploi_actuel_selectionne = options_actuels[selection_actuel_label]
-    else:
-        emploi_actuel_selectionne = emplois_actuels[0]
-        st.write(f"**Emploi actuel analysé :** {emploi_actuel_selectionne.intitule} (`{emploi_actuel_selectionne.fichier_source}`)")
+    st.markdown("### 2. Analyse globale emplois actuels × emplois cibles")
 
-    # Lancement du calcul sémantique et scoring
-    analyses: list[ResultatAnalyseCouple] = []
-    
-    # Bouton explicite pour lancer l'encodage (très utile si modèle lourd)
-    if st.button("Lancer l'analyse comparative", type="primary"):
+    if st.button("Lancer l'analyse globale", type="primary"):
         with st.spinner("Encodage sémantique et calcul des scores en cours..."):
-            for cible in emplois_cibles:
-                try:
-                    couple = CoupleEmplois(actuel=emploi_actuel_selectionne, cible=cible)
-                    # Analyse comparative hybride
-                    analyse = analyser_couple_semantiquement(couple, encodeur)
-                    analyses.append(analyse)
-                except Exception as e:
-                    st.error(f"Erreur lors de la comparaison avec '{cible.intitule}' : {e}")
-
-        if not analyses:
-            st.error("Aucune comparaison n'a pu être menée.")
-            return
-
-        # Phase de sélection globale
-        selection_resultat = selectionner_cibles(analyses)
-
-        # Affichage de l'alerte générale de sélection
-        if selection_resultat.alerte:
-            if selection_resultat.alerte == MESSAGE_AUCUNE_CIBLE:
-                st.error(f"### {MESSAGE_AUCUNE_CIBLE}")
-            elif selection_resultat.alerte == MESSAGE_ARBITRAGE_RH:
-                st.warning(f"### ⚠️ {MESSAGE_ARBITRAGE_RH}")
-        else:
-            st.success("### Métier cible identifié avec succès")
-
-        # Affichage synthétique des cibles admissibles et non admissibles
-        st.markdown("#### Synthèse des scores par métier cible")
-        
-        synthese_data = []
-        for ans in selection_resultat.analyses_classees:
-            est_retenue = ans in selection_resultat.meilleures_analyses
-            status_text = "Retenu ⭐" if est_retenue else ("Admissible" if ans.admissible else "Exclu (couverture insuffisante)")
-            synthese_data.append({
-                "Métier Cible": ans.emploi_cible.intitule,
-                "Couverture Sémantique (G_ef)": f"{float(ans.g_ef):.2%}",
-                "Satisfaction Niveaux (Gs_ef)": f"{float(ans.gs_ef):.2%}",
-                "Écart Moyen Pondéré": f"{float(ans.ecart_moyen):.2f}",
-                "Statut": status_text,
-                "Fichier Source": ans.emploi_cible.fichier_source,
-            })
-            
-        st.table(pd.DataFrame(synthese_data))
-
-        # Détail pour chaque métier cible retenu / admissible
-        if selection_resultat.meilleures_analyses:
-            st.markdown("---")
-            st.markdown("### 3. Détails des compétences et Recommandations de formation")
-            
-            for idx, analyse_retenue in enumerate(selection_resultat.meilleures_analyses):
-                cible = analyse_retenue.emploi_cible
-                st.markdown(f"#### 🎯 Métier retenu : **{cible.intitule}** (`{cible.fichier_source}`)")
-                
-                # Tableau détaillé des compétences
-                details_competences = []
-                for comp_corresp in analyse_retenue.correspondances:
-                    # Recherche de la recommandation de formation associée
-                    besoin = next(
-                        (b for b in analyse_retenue.besoins_formation if b.competence_cible == comp_corresp.competence_cible),
-                        None,
-                    )
-                    recommandation_text = besoin.commentaire if besoin else "Aucun commentaire particulier"
-
-                    actuelle_nom = comp_corresp.competence_actuelle.intitule if comp_corresp.competence_actuelle else "N/A"
-                    details_competences.append({
-                        "Compétence Cible": comp_corresp.competence_cible.intitule,
-                        "Niveau Cible": comp_corresp.niveau_requis,
-                        "Compétence Actuelle Associée": actuelle_nom,
-                        "Niveau Actuel": comp_corresp.niveau_actuel if comp_corresp.reconnue else 0,
-                        "Score Dense (D_ac)": f"{comp_corresp.score_dense:.4f}",
-                        "Score Sparse (L_ac)": f"{comp_corresp.score_sparse:.4f}",
-                        "Score Hybride (H_ac)": f"{comp_corresp.score_hybride:.4f}",
-                        "Reconnue": "Oui" if comp_corresp.reconnue else "Non",
-                        "Écart Niveau": comp_corresp.ecart_niveau,
-                        "Statut": comp_corresp.statut.replace("_", " ").title(),
-                        "Recommandation de Formation": recommandation_text,
-                    })
-                
-                df_details = pd.DataFrame(details_competences)
-                st.dataframe(df_details, use_container_width=True)
-
-                # Restitution spécifique par catégories : absentes ou niveaux insuffisants
-                col_abs, col_insuff = st.columns(2)
-                
-                with col_abs:
-                    st.markdown("**Compétences absentes ou non reconnues :**")
-                    absentes = [c.competence_cible.intitule for c in analyse_retenue.correspondances if not c.reconnue]
-                    if absentes:
-                        for a in absentes:
-                            st.write(f"- 🔴 {a} (Recommandation : *{details_competences[absentes.index(a)]['Recommandation de Formation']}*)")
-                    else:
-                        st.write("*Aucune compétence absente.*")
-                
-                with col_insuff:
-                    st.markdown("**Compétences reconnues mais à niveau insuffisant :**")
-                    insuffisantes = [
-                        c for c in analyse_retenue.correspondances 
-                        if c.reconnue and c.statut == "niveau_insuffisant"
-                    ]
-                    if insuffisantes:
-                        for ins in insuffisantes:
-                            rec_text = next(
-                                (b.commentaire for b in analyse_retenue.besoins_formation if b.competence_cible == ins.competence_cible),
-                                "N/A"
-                            )
-                            st.write(f"- 🟡 **{ins.competence_cible.intitule}** : requis niveau {ins.niveau_requis}, actuel {ins.niveau_actuel} (Écart: {ins.ecart_niveau})")
-                            st.caption(f"  *Recommandation : {rec_text}*")
-                    else:
-                        st.write("*Aucun niveau insuffisant.*")
-
-            # Section 4: Contrôle Inverse (Compétences actuelles non reprises)
-            st.markdown("---")
-            st.markdown("### 4. Contrôle Inverse & Traçabilité")
-            
-            signalements = controler_competences_actuelles_non_reprises(
-                emploi_actuel=emploi_actuel_selectionne,
-                emplois_cibles=emplois_cibles,
-                emplois_cibles_selectionnes=tuple(ans.emploi_cible for ans in selection_resultat.meilleures_analyses),
-                encodeur=encodeur,
-            )
-            
-            st.markdown("**Compétences de l'emploi actuel non reprises dans les métiers cibles analysés :**")
-            if signalements:
-                sig_data = []
-                for sig in signalements:
-                    st.write(f"- ℹ️ **{sig.competence_actuelle.intitule}** : {sig.message}")
-                    sig_data.append({
-                        "Compétence Actuelle": sig.competence_actuelle.intitule,
-                        "Type de Signalement": sig.type_non_reprise.replace("_", " ").title(),
-                        "Meilleure Cible": sig.meilleur_emploi_cible.intitule if sig.meilleur_emploi_cible else "N/A",
-                        "Meilleure Compétence Cible": sig.meilleure_competence_cible.intitule if sig.meilleure_competence_cible else "N/A",
-                        "Score Hybride": f"{sig.score_hybride:.4f}" if sig.score_hybride else "N/A",
-                        "Message": sig.message,
-                    })
-                
-                # Permettre l'exportation CSV de ce contrôle
-                df_sig = pd.DataFrame(sig_data)
-            else:
-                st.write("*Toutes les compétences actuelles ont été valorisées dans au moins un des métiers cibles retenus.*")
-                df_sig = pd.DataFrame()
-
-            # Section 5: Exportation Globale CSV
-            st.markdown("---")
-            st.markdown("### 5. Exportation CSV des Résultats")
-            
-            # Construction d'un export CSV unifié contenant toutes les lignes de correspondances
-            export_rows = []
-            for ans in selection_resultat.analyses_classees:
-                est_retenue = ans in selection_resultat.meilleures_analyses
-                for comp_corresp in ans.correspondances:
-                    besoin = next(
-                        (b for b in ans.besoins_formation if b.competence_cible == comp_corresp.competence_cible),
-                        None,
-                    )
-                    recommandation_text = besoin.commentaire if besoin else ("Aucun commentaire particulier" if comp_corresp.reconnue else "Formation complète nécessaire pour acquérir la compétence")
-                    
-                    export_rows.append({
-                        "Emploi_Actuel": emploi_actuel_selectionne.intitule,
-                        "Fichier_Source_Actuel": emploi_actuel_selectionne.fichier_source,
-                        "Metier_Cible": ans.emploi_cible.intitule,
-                        "Fichier_Source_Cible": ans.emploi_cible.fichier_source,
-                        "G_ef_Couverture": float(ans.g_ef),
-                        "Gs_ef_Satisfaction": float(ans.gs_ef),
-                        "Ecart_Moyen_ef": float(ans.ecart_moyen),
-                        "Est_Admissible": ans.admissible,
-                        "Est_Selectionne": est_retenue,
-                        "Competence_Cible": comp_corresp.competence_cible.intitule,
-                        "Niveau_Cible": comp_corresp.niveau_requis,
-                        "Competence_Actuelle_Associee": comp_corresp.competence_actuelle.intitule if comp_corresp.competence_actuelle else "N/A",
-                        "Niveau_Actuel": comp_corresp.niveau_actuel if comp_corresp.reconnue else 0,
-                        "Score_Dense_D_ac": comp_corresp.score_dense,
-                        "Score_Sparse_L_ac": comp_corresp.score_sparse,
-                        "Score_Hybride_H_ac": comp_corresp.score_hybride,
-                        "Reconnue": comp_corresp.reconnue,
-                        "Ecart_Niveau": comp_corresp.ecart_niveau,
-                        "Statut": comp_corresp.statut,
-                        "Recommandation_Formation": recommandation_text,
-                    })
-            
-            df_export = pd.DataFrame(export_rows)
-            
-            # Création du buffer CSV en mémoire
-            csv_buffer = io.StringIO()
-            df_export.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
-            csv_data = csv_buffer.getvalue()
-            
-            st.download_button(
-                label="Télécharger le rapport détaillé au format CSV",
-                data=csv_data,
-                file_name=f"rapport_comparatif_{emploi_actuel_selectionne.intitule.replace(' ', '_').lower()}.csv",
-                mime="text/csv",
-            )
-            
-            if not df_sig.empty:
-                csv_sig_buffer = io.StringIO()
-                df_sig.to_csv(csv_sig_buffer, index=False, encoding="utf-8-sig")
-                st.download_button(
-                    label="Télécharger le rapport de contrôle inverse (Compétences non reprises) en CSV",
-                    data=csv_sig_buffer.getvalue(),
-                    file_name=f"controle_inverse_{emploi_actuel_selectionne.intitule.replace(' ', '_').lower()}.csv",
-                    mime="text/csv",
+            try:
+                resultat = orchestrer_emplois(
+                    emplois_actuels,
+                    emplois_cibles,
+                    encodeur,
+                    seuil_sim=seuil_sim,
+                    seuil_couv=seuil_couv,
                 )
+            except Exception as err:
+                st.error(f"L'analyse globale a échoué : {err}")
+                return
+
+        st.caption(
+            f"Seuils utilisés — similarité : {seuil_sim:.2f} ; "
+            f"couverture : {seuil_couv:.2f}"
+        )
+
+        synthese = construire_synthese_orchestration(resultat)
+        matrice = construire_matrice_couples(resultat)
+        details = construire_details_orchestration(resultat)
+
+        st.markdown("#### Synthèse par emploi actuel")
+        st.dataframe(pd.DataFrame(synthese), use_container_width=True)
+
+        st.markdown("#### Matrice complète des couples analysés")
+        st.dataframe(pd.DataFrame(matrice), use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("### 3. Cibles retenues, compétences et recommandations")
+
+        for resultat_emploi in resultat.resultats_emplois:
+            emploi_actuel = resultat_emploi.emploi_actuel
+            st.markdown(
+                f"#### Emploi actuel : **{emploi_actuel.intitule}** "
+                f"(`{emploi_actuel.fichier_source}`)"
+            )
+            if not resultat_emploi.cibles_retenues:
+                st.error(MESSAGE_AUCUNE_CIBLE)
+                continue
+            if len(resultat_emploi.cibles_retenues) > 1:
+                st.warning(MESSAGE_ARBITRAGE_RH)
+
+            for cible_retenue in resultat_emploi.cibles_retenues:
+                analyse = cible_retenue.analyse
+                cible = analyse.emploi_cible
+                st.markdown(
+                    f"##### Emploi cible retenu : **{cible.intitule}** "
+                    f"(`{cible.fichier_source}`)"
+                )
+                col_g, col_gs, col_ecart, col_r = st.columns(4)
+                col_g.metric("G_epfq", f"{analyse.g_ef:.2%}")
+                col_gs.metric("Gs_epfq", f"{analyse.gs_ef:.2%}")
+                col_ecart.metric("Écart moyen", f"{analyse.ecart_moyen:.2f}")
+                col_r.metric("R_epfq", f"{cible_retenue.r_epfq:.2%}")
+                st.dataframe(
+                    pd.DataFrame(
+                        construire_details_competences(
+                            analyse,
+                            seuil_sim=resultat.seuil_sim,
+                        )
+                    ),
+                    use_container_width=True,
+                )
+
+            signalements = controler_competences_actuelles_non_reprises(
+                emploi_actuel=emploi_actuel,
+                emplois_cibles=emplois_cibles,
+                emplois_cibles_selectionnes=tuple(
+                    cible.analyse.emploi_cible
+                    for cible in resultat_emploi.cibles_retenues
+                ),
+                encodeur=encodeur,
+                seuil_sim=seuil_sim,
+            )
+            st.markdown("**Compétences actuelles non reprises :**")
+            if signalements:
+                for signalement in signalements:
+                    st.write(
+                        f"- ℹ️ **{signalement.competence_actuelle.intitule}** : "
+                        f"{signalement.message}"
+                    )
+            else:
+                st.write("*Toutes les compétences actuelles sont réutilisées.*")
+
+        st.markdown("---")
+        st.markdown("### 4. Exports CSV consolidés")
+        st.download_button(
+            label="Télécharger la synthèse globale",
+            data=convertir_csv(synthese),
+            file_name="synthese_globale_emplois.csv",
+            mime="text/csv",
+        )
+        st.download_button(
+            label="Télécharger la matrice complète des couples",
+            data=convertir_csv(matrice),
+            file_name="matrice_emplois_actuels_cibles.csv",
+            mime="text/csv",
+        )
+        st.download_button(
+            label="Télécharger les détails des cibles retenues",
+            data=convertir_csv(details),
+            file_name="details_cibles_retenues.csv",
+            mime="text/csv",
+        )
 
 
 if __name__ == "__main__":
     main()
-

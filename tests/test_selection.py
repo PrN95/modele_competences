@@ -165,7 +165,7 @@ def test_no_admissible_target_returns_exact_required_message() -> None:
     assert selection.analyses_admissibles == ()
     assert selection.meilleures_analyses == ()
     assert selection.alerte == MESSAGE_AUCUNE_CIBLE
-    assert selection.alerte == "Aucun métier cible ne correspond à cet emploi actuel"
+    assert selection.alerte == "Aucun emploi cible ne correspond à cet emploi actuel"
 
 
 def test_equal_coverage_and_gap_are_broken_by_highest_strict_score() -> None:

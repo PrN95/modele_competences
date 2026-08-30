@@ -16,15 +16,17 @@ from src.matching import analyser_correspondance, generer_correspondances_semant
 from src.recommendations import determiner_besoin_formation
 
 
-MESSAGE_AUCUNE_CIBLE = "Aucun métier cible ne correspond à cet emploi actuel"
+MESSAGE_AUCUNE_CIBLE = "Aucun emploi cible ne correspond à cet emploi actuel"
 MESSAGE_ARBITRAGE_RH = (
-    "Plusieurs métiers cibles sont ex aequo ; le service RH devra trancher"
+    "Plusieurs emplois cibles sont ex aequo ; le service RH devra trancher"
 )
 
 
 def analyser_couple(
     couple: CoupleEmplois,
     correspondances_fournies: Iterable[CorrespondanceFournie],
+    seuil_sim: float | Fraction | None = None,
+    seuil_couv: float | Fraction | None = None,
 ) -> ResultatAnalyseCouple:
     """Calcule la couverture, ``G_ef`` et ``Ecart_moyen_ef`` d'un couple."""
 
@@ -32,7 +34,7 @@ def analyser_couple(
     donnees = tuple(correspondances_fournies)
     donnees = _ordonner_correspondances(couple, donnees)
 
-    correspondances = tuple(analyser_correspondance(item) for item in donnees)
+    correspondances = tuple(analyser_correspondance(item, seuil_sim) for item in donnees)
     nombre_cibles = len(correspondances)
     nombre_reconnues = sum(item.reconnue for item in correspondances)
     nombre_satisfaites = sum(item.niveau_suffisant for item in correspondances)
@@ -47,6 +49,10 @@ def analyser_couple(
         / somme_niveaux_cibles
     )
 
+    seuil_couv_exact = (
+        Fraction(str(seuil_couv)) if seuil_couv is not None else SEUIL_COUV
+    )
+
     return ResultatAnalyseCouple(
         emploi_actuel=couple.actuel,
         emploi_cible=couple.cible,
@@ -56,18 +62,25 @@ def analyser_couple(
         score_global=float(score_global_exact),
         score_strict=float(score_strict_exact),
         ecart_moyen=ecart_moyen,
-        admissible=score_global_exact >= SEUIL_COUV,
+        admissible=score_global_exact >= seuil_couv_exact,
     )
 
 
 def analyser_couple_semantiquement(
     couple: CoupleEmplois,
     encodeur: EncodeurCompetences,
+    seuil_sim: float | Fraction | None = None,
+    seuil_couv: float | Fraction | None = None,
 ) -> ResultatAnalyseCouple:
     """Rapproche les compétences puis délègue tous les calculs à la phase 2."""
 
     correspondances = generer_correspondances_semantiques(couple, encodeur)
-    return analyser_couple(couple, correspondances)
+    return analyser_couple(
+        couple,
+        correspondances,
+        seuil_sim=seuil_sim,
+        seuil_couv=seuil_couv,
+    )
 
 
 def selectionner_cibles(

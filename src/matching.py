@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from fractions import Fraction
-from math import isfinite
+from math import isfinite, sqrt
 from numbers import Real
 from collections.abc import Mapping, Sequence
 
@@ -27,6 +27,7 @@ def calculer_score_hybride(score_dense: float, score_sparse: float) -> float:
 
 def analyser_correspondance(
     correspondance: CorrespondanceFournie,
+    seuil_sim: float | Fraction | None = None,
 ) -> CorrespondanceCompetence:
     """Applique le seuil sémantique puis compare séparément les niveaux."""
 
@@ -34,7 +35,12 @@ def analyser_correspondance(
         correspondance.score_dense,
         correspondance.score_sparse,
     )
-    reconnue = score_hybride_exact >= SEMANTIC_MATCH_THRESHOLD
+    seuil_sim_exact = (
+        _as_fraction(seuil_sim, "seuil_sim")
+        if seuil_sim is not None
+        else SEMANTIC_MATCH_THRESHOLD
+    )
+    reconnue = score_hybride_exact >= seuil_sim_exact
 
     if reconnue and correspondance.competence_actuelle is None:
         raise ValueError(
@@ -188,6 +194,7 @@ def controler_competences_actuelles_non_reprises(
     emplois_cibles: Sequence[Emploi],
     emplois_cibles_selectionnes: Sequence[Emploi],
     encodeur: EncodeurCompetences,
+    seuil_sim: float | Fraction | None = None,
 ) -> tuple[SignalementCompetenceActuelle, ...]:
     """Signale les compétences actuelles absentes des cibles sélectionnées.
 
@@ -210,6 +217,12 @@ def controler_competences_actuelles_non_reprises(
         for selectionnee in selectionnees
     ):
         raise ValueError("Une cible sélectionnée n'a pas été analysée.")
+
+    seuil_sim_exact = (
+        _as_fraction(seuil_sim, "seuil_sim")
+        if seuil_sim is not None
+        else SEMANTIC_MATCH_THRESHOLD
+    )
 
     def est_selectionnee(cible: Emploi) -> bool:
         return any(cible is item for item in selectionnees)
@@ -254,7 +267,7 @@ def controler_competences_actuelles_non_reprises(
         if _score_hybride_exact(
             meilleure_selectionnee.score_dense,
             meilleure_selectionnee.score_sparse,
-        ) >= SEMANTIC_MATCH_THRESHOLD:
+        ) >= seuil_sim_exact:
             continue
 
         candidats_autres = tuple(
@@ -268,7 +281,7 @@ def controler_competences_actuelles_non_reprises(
         presente_autre = meilleure_autre is not None and _score_hybride_exact(
             meilleure_autre.score_dense,
             meilleure_autre.score_sparse,
-        ) >= SEMANTIC_MATCH_THRESHOLD
+        ) >= seuil_sim_exact
 
         if presente_autre:
             meilleure = meilleure_autre
@@ -313,10 +326,17 @@ def calculer_score_sparse(
     poids_actuels: Mapping[str, float],
     poids_cibles: Mapping[str, float],
 ) -> float:
-    """Somme des produits des poids lexicaux communs."""
+    """Similarité cosinus (normalisation L2) des dictionnaires de poids sparse."""
 
     communs = poids_actuels.keys() & poids_cibles.keys()
-    return float(sum(poids_actuels[token] * poids_cibles[token] for token in communs))
+    if not communs:
+        return 0.0
+    prod_scalaire = sum(poids_actuels[token] * poids_cibles[token] for token in communs)
+    norme_actuel = sqrt(sum(w * w for w in poids_actuels.values()))
+    norme_cible = sqrt(sum(w * w for w in poids_cibles.values()))
+    if norme_actuel == 0.0 or norme_cible == 0.0:
+        return 0.0
+    return float(prod_scalaire / (norme_actuel * norme_cible))
 
 
 def _score_hybride_exact(score_dense: float, score_sparse: float) -> Fraction:

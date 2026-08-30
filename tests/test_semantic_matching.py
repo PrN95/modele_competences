@@ -46,8 +46,8 @@ def sortie(dense, sparse=None) -> SortieEncodage:
     )
 
 
-def test_sparse_score_is_dot_product_on_common_tokens() -> None:
-    assert calculer_score_sparse({"a": 0.5, "b": 0.2}, {"a": 0.4, "c": 1.0}) == pytest.approx(0.2)
+def test_sparse_score_is_cosine_similarity() -> None:
+    assert calculer_score_sparse({"a": 0.5, "b": 0.2}, {"a": 0.4, "c": 1.0}) == pytest.approx(10 / 29)
 
 
 def test_best_current_competence_is_selected_for_each_target() -> None:
@@ -98,8 +98,8 @@ def test_candidate_below_threshold_is_kept_and_sent_to_business_scoring() -> Non
     )
     encodeur = FauxEncodeur(
         {
-            ("A1",): sortie(((1.0, 0.0),), ({"x": 1.0},)),
-            ("T1",): sortie(((0.6, 0.8),), ({"x": 0.6},)),
+            ("A1",): sortie(((1.0, 0.0),), ({"y": 1.0},)),
+            ("T1",): sortie(((0.6, 0.8),), ({"x": 1.0},)),
         }
     )
 
@@ -108,7 +108,7 @@ def test_candidate_below_threshold_is_kept_and_sent_to_business_scoring() -> Non
 
     assert supplied[0].competence_actuelle == actuelle
     assert supplied[0].score_dense == pytest.approx(0.6)
-    assert supplied[0].score_sparse == pytest.approx(0.6)
+    assert supplied[0].score_sparse == pytest.approx(0.0)
     assert result.correspondances[0].competence_actuelle == actuelle
     assert result.correspondances[0].reconnue is False
     assert result.correspondances[0].niveau_actuel == 0
@@ -175,11 +175,14 @@ def test_exact_hybrid_and_level_tie_is_broken_by_highest_sparse_score() -> None:
         {
             ("A-SPARSE-BAS", "A-SPARSE-HAUT"): sortie(
                 ((1.0, 0.0), (0.0, 1.0)),
-                ({"bas": 0.3}, {"haut": 0.6}),
+                (
+                    {"bas": 0.5, "bas_autre": 0.8660254037844386},
+                    {"haut": 0.75, "haut_autre": 0.6614378277661477},
+                ),
             ),
             ("T",): sortie(
                 ((0.9, 0.75),),
-                ({"bas": 1.0, "haut": 1.0},),
+                ({"bas": 0.6, "haut": 0.8},),
             ),
         }
     )
