@@ -61,6 +61,7 @@ def analyser_correspondance(
         niveau_actuel=niveau_actuel,
         ecart_niveau=ecart_niveau,
         statut=statut,
+        detail_egalite=correspondance.detail_egalite,
     )
 
 
@@ -80,8 +81,7 @@ def generer_correspondances_semantiques(
     correspondances: list[CorrespondanceFournie] = []
 
     for cible_index, competence_cible in enumerate(couple.cible.competences):
-        meilleure: CorrespondanceFournie | None = None
-        meilleur_score_hybride: float | None = None
+        candidates: list[_CandidateDirect] = []
 
         for actuel_index, competence_actuelle in enumerate(couple.actuel.competences):
             score_dense = calculer_score_dense(
@@ -92,22 +92,86 @@ def generer_correspondances_semantiques(
                 encodage_actuel.poids_sparse[actuel_index],
                 encodage_cible.poids_sparse[cible_index],
             )
-            score_hybride = calculer_score_hybride(score_dense, score_sparse)
-
-            if meilleur_score_hybride is None or score_hybride > meilleur_score_hybride:
-                meilleur_score_hybride = score_hybride
-                meilleure = CorrespondanceFournie(
+            candidates.append(
+                _CandidateDirect(
+                    index_source=actuel_index,
                     competence_cible=competence_cible,
                     competence_actuelle=competence_actuelle,
                     score_dense=score_dense,
                     score_sparse=score_sparse,
+                    score_hybride=_score_hybride_exact(score_dense, score_sparse),
                 )
+            )
 
-        if meilleure is None:  # protégé par le contrôle des compétences actuelles
+        if not candidates:  # protégé par le contrôle des compétences actuelles
             raise RuntimeError("Aucune candidate actuelle n'a pu être sélectionnée.")
-        correspondances.append(meilleure)
+        correspondances.append(_selectionner_candidate_directe(candidates))
 
     return tuple(correspondances)
+
+
+@dataclass(frozen=True, slots=True)
+class _CandidateDirect:
+    index_source: int
+    competence_cible: Competence
+    competence_actuelle: Competence
+    score_dense: float
+    score_sparse: float
+    score_hybride: Fraction
+
+
+def _selectionner_candidate_directe(
+    candidates: Sequence[_CandidateDirect],
+) -> CorrespondanceFournie:
+    """Applique H_ac, niveau, L_ac, puis un choix textuel déterministe."""
+
+    meilleur_hybride = max(item.score_hybride for item in candidates)
+    ex_aequo_hybride = tuple(
+        item for item in candidates if item.score_hybride == meilleur_hybride
+    )
+    meilleur_niveau = max(item.competence_actuelle.niveau for item in ex_aequo_hybride)
+    ex_aequo_niveau = tuple(
+        item
+        for item in ex_aequo_hybride
+        if item.competence_actuelle.niveau == meilleur_niveau
+    )
+    meilleur_sparse = max(
+        _as_fraction(item.score_sparse, "score_sparse") for item in ex_aequo_niveau
+    )
+    ex_aequo_persistants = tuple(
+        item
+        for item in ex_aequo_niveau
+        if _as_fraction(item.score_sparse, "score_sparse") == meilleur_sparse
+    )
+    choisie = min(ex_aequo_persistants, key=_cle_deterministe_candidate)
+    detail_egalite = None
+    if len(ex_aequo_persistants) > 1:
+        noms = ", ".join(
+            f"« {item.competence_actuelle.intitule} »"
+            for item in sorted(ex_aequo_persistants, key=_cle_deterministe_candidate)
+        )
+        detail_egalite = (
+            "Égalité exacte persistante de H_ac, du niveau actuel et de L_ac entre "
+            f"{noms} ; choix déterministe : « {choisie.competence_actuelle.intitule} »."
+        )
+
+    return CorrespondanceFournie(
+        competence_cible=choisie.competence_cible,
+        competence_actuelle=choisie.competence_actuelle,
+        score_dense=choisie.score_dense,
+        score_sparse=choisie.score_sparse,
+        detail_egalite=detail_egalite,
+    )
+
+
+def _cle_deterministe_candidate(candidate: _CandidateDirect) -> tuple[str, str, str, int]:
+    competence = candidate.competence_actuelle
+    return (
+        competence.intitule.casefold(),
+        (competence.description or "").casefold(),
+        competence.id or "",
+        candidate.index_source,
+    )
 
 
 @dataclass(frozen=True, slots=True)

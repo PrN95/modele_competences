@@ -48,17 +48,19 @@ def test_complete_manually_verifiable_example() -> None:
 
     result = analyser_couple(pair, supplied)
 
-    # Reconnues: 2/3. Niveau suffisant: 1/3.
+    # Reconnues: G_ef = 2/3. Entièrement satisfaites: Gs_ef = 1/3.
     assert result.couverture_semantique == pytest.approx(2 / 3)
-    assert result.score_global == pytest.approx(1 / 3)
-    # Ecart_moyen_ef = (3 + 1 + 0) / 3, sans normalisation par niveau requis.
-    assert result.ecart_moyen == pytest.approx(4 / 3)
+    assert result.score_global == pytest.approx(2 / 3)
+    assert result.score_strict == pytest.approx(1 / 3)
+    # Ecart_moyen_ef = (3×3 + 1×2 + 0×2) / (3 + 2 + 2) = 11/7.
+    assert result.ecart_moyen == pytest.approx(11 / 7)
+    assert result.admissible is False
     assert [item.statut for item in result.correspondances] == [
         "absente",
         "niveau_insuffisant",
         "niveau_suffisant",
     ]
-    assert len(result.besoins_formation) == 2
+    assert result.besoins_formation == ()
 
 
 def test_every_target_competence_must_have_exactly_one_supplied_match() -> None:
@@ -138,5 +140,28 @@ def test_scoring_does_not_depend_on_optional_identifiers() -> None:
         pair, (CorrespondanceFournie(cible, actuelle, 0.8, 0.8),)
     )
 
-    assert result.score_global == 0.0
+    assert result.score_global == 1.0
+    assert result.score_strict == 0.0
     assert result.ecart_moyen == 1.0
+
+
+def test_recognized_target_with_all_levels_insufficient_has_full_coverage() -> None:
+    actuelles = (competence("ACT-1", 1), competence("ACT-2", 2))
+    cibles = (competence("CIB-1", 3), competence("CIB-2", 4))
+    pair = CoupleEmplois(
+        actuel=emploi("ACTUEL", "actuel", actuelles),
+        cible=emploi("CIBLE", "cible", cibles),
+    )
+
+    result = analyser_couple(
+        pair,
+        (
+            CorrespondanceFournie(cibles[0], actuelles[0], 0.8, 0.8),
+            CorrespondanceFournie(cibles[1], actuelles[1], 0.8, 0.8),
+        ),
+    )
+
+    assert result.g_ef == 1.0
+    assert result.gs_ef == 0.0
+    assert result.admissible is True
+    assert result.ecart_moyen == pytest.approx((2 * 3 + 2 * 4) / (3 + 4))

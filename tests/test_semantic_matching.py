@@ -8,7 +8,7 @@ from src.matching import (
     calculer_score_sparse,
     generer_correspondances_semantiques,
 )
-from src.scoring import analyser_couple_semantiquement
+from src.scoring import analyser_couple, analyser_couple_semantiquement
 
 
 def competence(identifier: str, niveau: int = 2) -> Competence:
@@ -114,7 +114,8 @@ def test_candidate_below_threshold_is_kept_and_sent_to_business_scoring() -> Non
     assert result.correspondances[0].niveau_actuel == 0
     assert result.couverture_semantique == 0.0
     assert result.score_global == 0.0
-    assert result.besoins_formation[0].niveau_depart == 0
+    assert result.score_strict == 0.0
+    assert result.besoins_formation == ()
 
 
 def test_recognized_candidate_is_transmitted_to_phase_two() -> None:
@@ -136,4 +137,83 @@ def test_recognized_candidate_is_transmitted_to_phase_two() -> None:
     assert result.correspondances[0].reconnue is True
     assert result.correspondances[0].niveau_actuel == 3
     assert result.score_global == 1.0
+    assert result.score_strict == 1.0
     assert result.besoins_formation == ()
+
+
+def test_exact_hybrid_tie_is_broken_by_highest_current_level() -> None:
+    actuelles = (competence("A-BAS", 1), competence("A-HAUT", 4))
+    cible = competence("T", 2)
+    couple = CoupleEmplois(
+        emploi("ACT", "actuel", actuelles),
+        emploi("CIB", "cible", (cible,)),
+    )
+    encodeur = FauxEncodeur(
+        {
+            ("A-BAS", "A-HAUT"): sortie(
+                ((1.0, 0.0), (0.0, 1.0)),
+                ({"x": 1.0}, {"y": 1.0}),
+            ),
+            ("T",): sortie(((0.8, 0.8),), ({"x": 0.8, "y": 0.8},)),
+        }
+    )
+
+    result = generer_correspondances_semantiques(couple, encodeur)[0]
+
+    assert result.competence_actuelle == actuelles[1]
+    assert result.detail_egalite is None
+
+
+def test_exact_hybrid_and_level_tie_is_broken_by_highest_sparse_score() -> None:
+    actuelles = (competence("A-SPARSE-BAS", 2), competence("A-SPARSE-HAUT", 2))
+    cible = competence("T", 2)
+    couple = CoupleEmplois(
+        emploi("ACT", "actuel", actuelles),
+        emploi("CIB", "cible", (cible,)),
+    )
+    encodeur = FauxEncodeur(
+        {
+            ("A-SPARSE-BAS", "A-SPARSE-HAUT"): sortie(
+                ((1.0, 0.0), (0.0, 1.0)),
+                ({"bas": 0.3}, {"haut": 0.6}),
+            ),
+            ("T",): sortie(
+                ((0.9, 0.75),),
+                ({"bas": 1.0, "haut": 1.0},),
+            ),
+        }
+    )
+
+    result = generer_correspondances_semantiques(couple, encodeur)[0]
+
+    assert result.score_dense == pytest.approx(0.75)
+    assert result.score_sparse == pytest.approx(0.6)
+    assert result.competence_actuelle == actuelles[1]
+    assert result.detail_egalite is None
+
+
+def test_persistent_candidate_tie_is_deterministic_and_reported() -> None:
+    actuelles = (competence("Zulu", 2), competence("Alpha", 2))
+    cible = competence("T", 2)
+    couple = CoupleEmplois(
+        emploi("ACT", "actuel", actuelles),
+        emploi("CIB", "cible", (cible,)),
+    )
+    encodeur = FauxEncodeur(
+        {
+            ("Zulu", "Alpha"): sortie(
+                ((1.0, 0.0), (0.0, 1.0)),
+                ({"z": 0.5}, {"a": 0.5}),
+            ),
+            ("T",): sortie(((0.8, 0.8),), ({"z": 1.0, "a": 1.0},)),
+        }
+    )
+
+    supplied = generer_correspondances_semantiques(couple, encodeur)[0]
+    detailed = analyser_couple(couple, (supplied,)).correspondances[0]
+
+    assert supplied.competence_actuelle == actuelles[1]
+    assert supplied.detail_egalite is not None
+    assert "Égalité exacte persistante" in supplied.detail_egalite
+    assert "choix déterministe : « Alpha »" in supplied.detail_egalite
+    assert detailed.detail_egalite == supplied.detail_egalite

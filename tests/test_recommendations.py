@@ -22,6 +22,10 @@ def test_absent_competence_trains_from_zero_to_required_level() -> None:
     assert need.ecart_niveau == 4
     assert need.motif == "competence_absente"
     assert need.recommandation == "formation_complete"
+    assert (
+        need.commentaire
+        == "Formation complète nécessaire pour acquérir la compétence"
+    )
 
 
 @pytest.mark.parametrize(("niveau_depart", "ecart"), [(1, 2), (1, 3)])
@@ -44,7 +48,8 @@ def test_large_gap_recommends_important_training_path(
     assert need.niveau_cible == niveau_depart + ecart
     assert need.ecart_niveau == ecart
     assert need.motif == "niveau_insuffisant"
-    assert need.recommandation == "parcours_formation_important"
+    assert need.recommandation == "parcours_formation_consequent"
+    assert need.commentaire == "Parcours de formation conséquent"
 
 
 def test_one_level_gap_recommends_single_level_progression() -> None:
@@ -58,6 +63,7 @@ def test_one_level_gap_recommends_single_level_progression() -> None:
 
     assert need is not None
     assert need.recommandation == "progression_un_niveau"
+    assert need.commentaire == "Formation légère pour progresser d’un niveau"
 
 
 def test_sufficient_level_has_no_training_need() -> None:

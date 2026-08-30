@@ -80,7 +80,7 @@ MotifFormation = Literal["competence_absente", "niveau_insuffisant"]
 TypeRecommandation = Literal[
     "formation_complete",
     "progression_un_niveau",
-    "parcours_formation_important",
+    "parcours_formation_consequent",
 ]
 TypeNonReprise = Literal[
     "presente_dans_une_autre_cible",
@@ -96,6 +96,7 @@ class CorrespondanceFournie:
     competence_actuelle: Competence | None
     score_dense: float
     score_sparse: float
+    detail_egalite: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +112,7 @@ class CorrespondanceCompetence:
     niveau_actuel: int
     ecart_niveau: int
     statut: StatutCorrespondance
+    detail_egalite: str | None = None
 
     @property
     def niveau_requis(self) -> int:
@@ -130,6 +132,7 @@ class BesoinFormation:
     niveau_cible: int
     motif: MotifFormation
     recommandation: TypeRecommandation
+    commentaire: str
 
     @property
     def ecart_niveau(self) -> int:
@@ -146,7 +149,21 @@ class ResultatAnalyseCouple:
     besoins_formation: tuple[BesoinFormation, ...]
     couverture_semantique: float
     score_global: float
+    score_strict: float
     ecart_moyen: float
+    admissible: bool
+
+    @property
+    def g_ef(self) -> float:
+        """Couverture des compétences cibles reconnues."""
+
+        return self.score_global
+
+    @property
+    def gs_ef(self) -> float:
+        """Part des compétences cibles entièrement satisfaites."""
+
+        return self.score_strict
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +171,7 @@ class ResultatSelectionCibles:
     """Classement et meilleure(s) cible(s) d'un emploi actuel."""
 
     analyses_classees: tuple[ResultatAnalyseCouple, ...]
+    analyses_admissibles: tuple[ResultatAnalyseCouple, ...]
     meilleures_analyses: tuple[ResultatAnalyseCouple, ...]
     alerte: str | None
 
