@@ -1,19 +1,19 @@
-# Environnement Python
-.venv/
 
-# Fichiers temporaires Python
+# Environnements virtuels
+.venv/
+venv/
+ENV/
+
+# Caches Python et Pytest
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .pytest_cache/
 
-# Paramètres et secrets locaux
-.env
-
-# Modèle volumineux téléchargé
+# Modèles volumineux et sorties temporaires
 models/
-
-# Résultats générés
 outputs/
 
-# Fiches d'emploi potentiellement confidentielles
+# Données et PDF confidentiels (Règle non négociable cadrage v3.0)
+*.pdf
 data/
