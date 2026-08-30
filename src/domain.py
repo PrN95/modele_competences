@@ -35,6 +35,24 @@ class Competence:
             return f"{self.intitule}. {self.description}"
         return self.intitule
 
+    @property
+    def competence_intitule(self) -> str:
+        """Nom du champ dans la structure normalisée commune aux extracteurs."""
+
+        return self.intitule
+
+    @property
+    def competence_description(self) -> str | None:
+        """Nom du champ dans la structure normalisée commune aux extracteurs."""
+
+        return self.description
+
+    @property
+    def texte_competence(self) -> str:
+        """Alias explicite du texte destiné ultérieurement à BGE-M3."""
+
+        return self.texte
+
 
 @dataclass(frozen=True, slots=True)
 class Emploi:
