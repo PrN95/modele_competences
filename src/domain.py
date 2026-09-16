@@ -16,16 +16,21 @@ class Competence:
 
     intitule: str
     description: str | None
-    niveau: int
+    niveau: int | None
     id: str | None = field(default=None, compare=False)
+    source_section: str | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
+        if self.niveau is None:
+            return
         if (
             isinstance(self.niveau, bool)
             or not isinstance(self.niveau, Integral)
             or self.niveau not in COMPETENCE_LEVELS
         ):
-            raise ValueError("Le niveau d'une compétence doit être compris entre 1 et 4.")
+            raise ValueError(
+                "Le niveau d'une compétence doit être absent ou compris entre 1 et 4."
+            )
 
     @property
     def texte(self) -> str:
@@ -65,6 +70,7 @@ class Emploi:
     fichier_source: str
     feuille_source: str | None
     id: str | None = field(default=None, compare=False)
+    format_extraction: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +81,12 @@ class CoupleEmplois:
     cible: Emploi
 
 
-StatutCorrespondance = Literal["absente", "niveau_insuffisant", "niveau_suffisant"]
+StatutCorrespondance = Literal[
+    "absente",
+    "niveau_non_renseigne",
+    "niveau_insuffisant",
+    "niveau_suffisant",
+]
 MotifFormation = Literal["competence_absente", "niveau_insuffisant"]
 TypeRecommandation = Literal[
     "formation_complete",
@@ -94,9 +105,11 @@ class CorrespondanceFournie:
 
     competence_cible: Competence
     competence_actuelle: Competence | None
-    score_dense: float
-    score_sparse: float
+    score_dense: float | None
+    score_sparse: float | None
     detail_egalite: str | None = None
+    score_llm: float | None = None
+    justification_courte: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,22 +118,37 @@ class CorrespondanceCompetence:
 
     competence_cible: Competence
     competence_actuelle: Competence | None
-    score_dense: float
-    score_sparse: float
-    score_hybride: float
+    score_dense: float | None
+    score_sparse: float | None
+    score_hybride: float | None
+    score_llm: float | None
     reconnue: bool
-    niveau_actuel: int
-    ecart_niveau: int
+    niveau_actuel: int | None
+    ecart_niveau: int | None
     statut: StatutCorrespondance
     detail_egalite: str | None = None
+    justification_courte: str | None = None
+    # Champ renseigné uniquement par le contrat Gemma autonome. Il n'est jamais
+    # dérivé par l'application.
+    recommandation_llm: str | None = None
 
     @property
-    def niveau_requis(self) -> int:
+    def score_similarite(self) -> float:
+        """Score utilisé par les règles métier, quelle que soit l'approche."""
+
+        if self.score_llm is not None:
+            return self.score_llm
+        if self.score_hybride is None:
+            raise ValueError("Aucun score de similarité n'est disponible.")
+        return self.score_hybride
+
+    @property
+    def niveau_requis(self) -> int | None:
         return self.competence_cible.niveau
 
     @property
     def niveau_suffisant(self) -> bool:
-        return self.reconnue and self.niveau_actuel >= self.niveau_requis
+        return self.statut == "niveau_suffisant"
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,14 +156,16 @@ class BesoinFormation:
     """Progression nécessaire sur une compétence cible."""
 
     competence_cible: Competence
-    niveau_depart: int
-    niveau_cible: int
+    niveau_depart: int | None
+    niveau_cible: int | None
     motif: MotifFormation
     recommandation: TypeRecommandation
     commentaire: str
 
     @property
-    def ecart_niveau(self) -> int:
+    def ecart_niveau(self) -> int | None:
+        if self.niveau_depart is None or self.niveau_cible is None:
+            return None
         return self.niveau_cible - self.niveau_depart
 
 
@@ -150,7 +180,7 @@ class ResultatAnalyseCouple:
     couverture_semantique: float
     score_global: float
     score_strict: float
-    ecart_moyen: float
+    ecart_moyen: float | None
     admissible: bool
 
     @property

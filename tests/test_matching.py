@@ -2,7 +2,11 @@ import pytest
 
 from src.config import DENSE_WEIGHT, SEMANTIC_MATCH_THRESHOLD, SPARSE_WEIGHT
 from src.domain import Competence, CorrespondanceFournie
-from src.matching import analyser_correspondance, calculer_score_hybride
+from src.matching import (
+    analyser_correspondance,
+    calculer_score_hybride,
+    valider_poids_hybrides,
+)
 
 
 def competence(identifier: str, niveau: int) -> Competence:
@@ -21,10 +25,19 @@ def test_weights_and_threshold_are_exact_fractions() -> None:
     assert SEMANTIC_MATCH_THRESHOLD.denominator == 10
 
 
-def test_hybrid_score_uses_exact_normalized_weights() -> None:
+def test_hybrid_score_uses_exact_default_weights() -> None:
     assert calculer_score_hybride(1.0, 0.0) == pytest.approx(2 / 3)
     assert calculer_score_hybride(0.0, 1.0) == pytest.approx(1 / 3)
     assert calculer_score_hybride(0.9, 0.3) == 0.70
+
+
+def test_hybrid_score_accepts_independent_half_weights() -> None:
+    assert calculer_score_hybride(0.9, 0.3, 0.5, 0.5) == pytest.approx(0.6)
+
+
+def test_hybrid_weights_reject_a_sum_different_from_one() -> None:
+    with pytest.raises(ValueError, match="somme.*doit être égale à 1"):
+        valider_poids_hybrides(0.8, 0.3)
 
 
 @pytest.mark.parametrize(
@@ -114,6 +127,24 @@ def test_expertise_target_gap_is_calculated_after_semantic_matching() -> None:
 
     assert result.reconnue is True
     assert result.ecart_niveau == 3
+
+
+@pytest.mark.parametrize("niveau_actuel, niveau_cible", [(None, 3), (None, None)])
+def test_correspondance_reconnue_sans_niveau_ne_calcule_pas_ecart(
+    niveau_actuel: int | None, niveau_cible: int | None
+) -> None:
+    result = analyser_correspondance(
+        CorrespondanceFournie(
+            competence("CIBLE", niveau_cible),
+            competence("ACTUELLE", niveau_actuel),
+            0.8,
+            0.8,
+        )
+    )
+
+    assert result.reconnue is True
+    assert result.statut == "niveau_non_renseigne"
+    assert result.ecart_niveau is None
 
 
 def test_recognized_match_requires_current_competence() -> None:

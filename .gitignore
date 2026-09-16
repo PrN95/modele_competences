@@ -14,6 +14,10 @@ __pycache__/
 models/
 outputs/
 
+# Corpus ROME local et sorties/caches d'expérimentation
+data/rome/Fiches emploi ROME/
+outputs/rome/
+
 # Données et PDF confidentiels (Règle non négociable cadrage v3.0)
 *.pdf
 data/

@@ -6,6 +6,7 @@ from fractions import Fraction
 
 from src.config import SEUIL_COUV
 from src.domain import (
+    CorrespondanceCompetence,
     CorrespondanceFournie,
     CoupleEmplois,
     ResultatAnalyseCouple,
@@ -13,6 +14,7 @@ from src.domain import (
 )
 from src.embeddings import EncodeurCompetences
 from src.matching import analyser_correspondance, generer_correspondances_semantiques
+from src.remote_models import CorrespondanceCategorielleGemma
 from src.recommendations import determiner_besoin_formation
 
 
@@ -27,6 +29,9 @@ def analyser_couple(
     correspondances_fournies: Iterable[CorrespondanceFournie],
     seuil_sim: float | Fraction | None = None,
     seuil_couv: float | Fraction | None = None,
+    *,
+    poids_dense: float | Fraction | None = None,
+    poids_sparse: float | Fraction | None = None,
 ) -> ResultatAnalyseCouple:
     """Calcule la couverture, ``G_ef`` et ``Ecart_moyen_ef`` d'un couple."""
 
@@ -34,20 +39,21 @@ def analyser_couple(
     donnees = tuple(correspondances_fournies)
     donnees = _ordonner_correspondances(couple, donnees)
 
-    correspondances = tuple(analyser_correspondance(item, seuil_sim) for item in donnees)
+    correspondances = tuple(
+        analyser_correspondance(
+            item,
+            seuil_sim,
+            poids_dense=poids_dense,
+            poids_sparse=poids_sparse,
+        )
+        for item in donnees
+    )
     nombre_cibles = len(correspondances)
     nombre_reconnues = sum(item.reconnue for item in correspondances)
     nombre_satisfaites = sum(item.niveau_suffisant for item in correspondances)
     score_global_exact = Fraction(nombre_reconnues, nombre_cibles)
     score_strict_exact = Fraction(nombre_satisfaites, nombre_cibles)
-    somme_niveaux_cibles = sum(item.niveau_requis for item in correspondances)
-    ecart_moyen = (
-        sum(
-            item.ecart_niveau * item.niveau_requis
-            for item in correspondances
-        )
-        / somme_niveaux_cibles
-    )
+    ecart_moyen = _calculer_ecart_moyen(correspondances)
 
     seuil_couv_exact = (
         Fraction(str(seuil_couv)) if seuil_couv is not None else SEUIL_COUV
@@ -71,16 +77,107 @@ def analyser_couple_semantiquement(
     encodeur: EncodeurCompetences,
     seuil_sim: float | Fraction | None = None,
     seuil_couv: float | Fraction | None = None,
+    *,
+    poids_dense: float | Fraction | None = None,
+    poids_sparse: float | Fraction | None = None,
 ) -> ResultatAnalyseCouple:
     """Rapproche les compétences puis délègue tous les calculs à la phase 2."""
 
-    correspondances = generer_correspondances_semantiques(couple, encodeur)
+    correspondances = generer_correspondances_semantiques(
+        couple,
+        encodeur,
+        poids_dense=poids_dense,
+        poids_sparse=poids_sparse,
+    )
     return analyser_couple(
         couple,
         correspondances,
         seuil_sim=seuil_sim,
         seuil_couv=seuil_couv,
+        poids_dense=poids_dense,
+        poids_sparse=poids_sparse,
     )
+
+
+def analyser_cible_selectionnee_gemma(
+    couple: CoupleEmplois,
+    decisions: Iterable[CorrespondanceCategorielleGemma],
+) -> ResultatAnalyseCouple:
+    """Calcule des indicateurs informatifs après la sélection directe de Gemma."""
+
+    _valider_couple(couple)
+    restantes = list(decisions)
+    correspondances: list[CorrespondanceCompetence] = []
+    for competence_cible in couple.cible.competences:
+        index = next(
+            (
+                position
+                for position, decision in enumerate(restantes)
+                if decision.competence_cible is competence_cible
+            ),
+            None,
+        )
+        if index is None:
+            raise ValueError(
+                f"Décision Gemma absente pour : {competence_cible.intitule}."
+            )
+        decision = restantes.pop(index)
+        reconnue = decision.statut == "Reconnue"
+        actuelle = decision.competence_actuelle
+        if reconnue and actuelle is None:
+            raise ValueError("Une décision Gemma Reconnue exige une compétence actuelle.")
+        if not reconnue and actuelle is not None:
+            raise ValueError("Une décision Gemma Absente ne doit pas référencer de compétence actuelle.")
+        if actuelle is not None and not any(
+            actuelle is competence for competence in couple.actuel.competences
+        ):
+            raise ValueError("La compétence actuelle choisie par Gemma est inconnue.")
+        niveau_actuel = actuelle.niveau if actuelle is not None else 0
+        niveau_requis = competence_cible.niveau
+        if not reconnue:
+            # Même convention historique que les embeddings : 0 est interne
+            # pour une compétence absente, sans inventer de niveau cible.
+            ecart = niveau_requis
+            statut = "absente"
+        elif niveau_actuel is None or niveau_requis is None:
+            ecart = None
+            statut = "niveau_non_renseigne"
+        else:
+            ecart = max(0, niveau_requis - niveau_actuel)
+            statut = "niveau_insuffisant" if ecart else "niveau_suffisant"
+        correspondances.append(
+            CorrespondanceCompetence(
+                competence_cible=competence_cible,
+                competence_actuelle=actuelle,
+                score_dense=None,
+                score_sparse=None,
+                score_hybride=None,
+                score_llm=None,
+                reconnue=reconnue,
+                niveau_actuel=niveau_actuel,
+                ecart_niveau=ecart,
+                statut=statut,
+            )
+        )
+    if restantes:
+        raise ValueError("Gemma a fourni des décisions supplémentaires.")
+
+    nombre_cibles = len(correspondances)
+    g_epfq = Fraction(sum(item.reconnue for item in correspondances), nombre_cibles)
+    gs_epfq = Fraction(sum(item.niveau_suffisant for item in correspondances), nombre_cibles)
+    ecart_moyen = _calculer_ecart_moyen(correspondances)
+    analyse = ResultatAnalyseCouple(
+        emploi_actuel=couple.actuel,
+        emploi_cible=couple.cible,
+        correspondances=tuple(correspondances),
+        besoins_formation=(),
+        couverture_semantique=float(g_epfq),
+        score_global=float(g_epfq),
+        score_strict=float(gs_epfq),
+        ecart_moyen=ecart_moyen,
+        admissible=True,
+    )
+    return _ajouter_recommandations(analyse)
 
 
 def selectionner_cibles(
@@ -106,7 +203,7 @@ def selectionner_cibles(
             donnees,
             key=lambda item: (
                 -item.score_global,
-                item.ecart_moyen,
+                _ecart_pour_departage(item.ecart_moyen),
                 -item.score_strict,
             ),
         )
@@ -122,14 +219,15 @@ def selectionner_cibles(
 
     meilleur_score = admissibles[0].score_global
     meilleur_ecart = min(
-        item.ecart_moyen
+        _ecart_pour_departage(item.ecart_moyen)
         for item in admissibles
         if item.score_global == meilleur_score
     )
     meilleures_apres_ecart = tuple(
         item
         for item in admissibles
-        if item.score_global == meilleur_score and item.ecart_moyen == meilleur_ecart
+        if item.score_global == meilleur_score
+        and _ecart_pour_departage(item.ecart_moyen) == meilleur_ecart
     )
     meilleur_score_strict = max(
         item.score_strict for item in meilleures_apres_ecart
@@ -160,6 +258,30 @@ def _ajouter_recommandations(
         if (besoin := determiner_besoin_formation(correspondance)) is not None
     )
     return replace(analyse, besoins_formation=besoins)
+
+
+def _calculer_ecart_moyen(
+    correspondances: Iterable[CorrespondanceCompetence],
+) -> float | None:
+    """Calcule l'écart pondéré sur les seules comparaisons de niveau possibles."""
+
+    comparables = tuple(
+        item
+        for item in correspondances
+        if item.ecart_niveau is not None and item.niveau_requis is not None
+    )
+    if not comparables:
+        return None
+    somme_niveaux = sum(item.niveau_requis for item in comparables)
+    return sum(
+        item.ecart_niveau * item.niveau_requis for item in comparables
+    ) / somme_niveaux
+
+
+def _ecart_pour_departage(ecart_moyen: float | None) -> float:
+    """Garde le départage déterministe si le niveau ne peut pas être comparé."""
+
+    return ecart_moyen if ecart_moyen is not None else float("inf")
 
 
 def _valider_couple(couple: CoupleEmplois) -> None:

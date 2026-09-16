@@ -4,16 +4,20 @@ from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 from typing import Any
+import warnings
 
 import pytest
 
-from src.domain import Competence
+from src.domain import Competence, CorrespondanceFournie, CoupleEmplois, Emploi
 from src.io_pdf import (
     PDFExtractionError,
+    PDFExtractionWarning,
     extract_emploi_actuel_pdf,
+    extract_employment_profile_pdf,
     extract_metier_cible_pdf,
     read_emploi_pdf,
 )
+from src.scoring import analyser_couple
 
 
 BLACK = (0.0, 0.0, 0.0)
@@ -212,6 +216,34 @@ def _current_pages() -> list[FakePage]:
     ]
 
 
+def _ambiguous_current_title_pages() -> list[FakePage]:
+    return [
+        FakePage(
+            1,
+            [
+                _line("Concepteur développeur logiciel SI 1", top=40, kind="title"),
+                _line("Analyste développeur logiciel SI 1", top=62, kind="title"),
+                _line("COMPÉTENCES DIGITALES X", top=120, kind="section"),
+                _line("Développement sécurisé", top=145, kind="competence", level="Application"),
+            ],
+        )
+    ]
+
+
+def _split_current_title_pages() -> list[FakePage]:
+    return [
+        FakePage(
+            1,
+            [
+                _line("RESPONSABLE DE GESTION DE", top=40, kind="title"),
+                _line("CONFIGURATION LOGICIELLE 4 - G13 v", top=59, kind="title"),
+                _line("COMPÉTENCES DIGITALES X", top=120, kind="section"),
+                _line("Gestion de configuration", top=145, kind="competence", level="Application"),
+            ],
+        )
+    ]
+
+
 def _target_pages() -> list[FakePage]:
     headers = ["Intitulé de la compétence", "Détails de la compétence", "Niveau"]
     return [
@@ -251,6 +283,7 @@ def test_extracteur_emploi_actuel_lit_uniquement_la_section_digitale(fake_pdf) -
 
     assert emploi.intitule == "EMPLOI ACTUEL FICTIF"
     assert emploi.type == "actuel"
+    assert emploi.format_extraction == "talentsoft"
     assert [competence.intitule for competence in emploi.competences] == [
         "Compétence sur deux pages",
         "Compétence sans identifiant",
@@ -261,6 +294,102 @@ def test_extracteur_emploi_actuel_lit_uniquement_la_section_digitale(fake_pdf) -
     assert all("Niveau SAME cible" not in competence.intitule for competence in emploi.competences)
 
 
+def test_meme_fiche_talentsoft_est_acceptee_comme_emploi_cible(fake_pdf) -> None:
+    fake_pdf(_current_pages())
+
+    emploi = read_emploi_pdf(
+        "fiche_talentsoft.pdf",
+        document_type="metier_cible",
+        original_filename="EMPLOI ACTUEL FICTIF.pdf",
+    )
+
+    assert emploi.type == "cible"
+    assert emploi.format_extraction == "talentsoft"
+    assert emploi.intitule == "EMPLOI ACTUEL FICTIF"
+    assert [competence.intitule for competence in emploi.competences] == [
+        "Compétence sur deux pages",
+        "Compétence sans identifiant",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("role", "type_attendu"),
+    [("emploi_actuel", "actuel"), ("metier_cible", "cible")],
+)
+def test_meme_pdf_tabulaire_est_accepte_dans_les_deux_zones(role, type_attendu, fake_pdf) -> None:
+    fake_pdf(_target_pages())
+
+    emploi = extract_employment_profile_pdf(
+        "Emploi_cible_1_Developpeur_logiciel_DevSecOps_D07.pdf",
+        role=role,
+        original_filename="Emploi_cible_1_Developpeur_logiciel_DevSecOps_D07.pdf",
+    )
+
+    assert emploi.type == type_attendu
+    assert emploi.format_extraction == "tableau"
+    assert len(emploi.competences) == 4
+
+
+def test_fiche_talentsoft_privilegie_le_nom_original_du_document(fake_pdf) -> None:
+    fake_pdf(_current_pages())
+
+    emploi = extract_emploi_actuel_pdf(
+        "/tmp/tmpkxc22q45.pdf",
+        original_filename="Nom sans rapport - E10.pdf",
+    )
+
+    assert emploi.intitule == "Nom sans rapport - E10"
+    assert emploi.fichier_source == "Nom sans rapport - E10.pdf"
+
+
+def test_intitule_ambigu_est_resolu_par_le_nom_original_de_fichier(fake_pdf) -> None:
+    fake_pdf(_ambiguous_current_title_pages())
+
+    emploi = read_emploi_pdf(
+        "/tmp/tmpkxc22q45.pdf",
+        document_type="emploi_actuel",
+        original_filename="Concepteur développeur logiciel SI 1 - E10.pdf",
+    )
+
+    assert emploi.intitule == "Concepteur développeur logiciel SI 1 - E10"
+    assert emploi.fichier_source == "Concepteur développeur logiciel SI 1 - E10.pdf"
+
+
+def test_nom_fichier_normalise_resout_casse_accents_et_tirets(fake_pdf) -> None:
+    fake_pdf(_ambiguous_current_title_pages())
+
+    emploi = extract_emploi_actuel_pdf(
+        "/tmp/tmpkxc22q45.pdf",
+        original_filename="CONCEPTEUR-déVELOPPEUR logiciel si 1 — E10.PDF",
+    )
+
+    assert emploi.intitule == "CONCEPTEUR-déVELOPPEUR logiciel si 1 — E10"
+
+
+def test_nom_fichier_ne_departage_pas_un_intitule_ambigu(fake_pdf) -> None:
+    fake_pdf(_ambiguous_current_title_pages())
+
+    with pytest.raises(PDFExtractionError) as caught:
+        extract_emploi_actuel_pdf("/tmp/tmpkxc22q45.pdf")
+
+    diagnostic = caught.value.diagnostics[0]
+    assert diagnostic.code == "association_ambigue"
+    assert "tmpkxc22q45.pdf" in diagnostic.message
+    assert "Concepteur développeur logiciel SI 1" in diagnostic.message
+    assert "aucun candidat ne correspond exactement" in diagnostic.message
+
+
+def test_intitule_talentsoft_sur_deux_lignes_est_reconcilie_avec_le_nom(fake_pdf) -> None:
+    fake_pdf(_split_current_title_pages())
+
+    emploi = extract_emploi_actuel_pdf(
+        "fiche.pdf",
+        original_filename="Responsable de gestion de configuration logicielle 4 - G13.pdf",
+    )
+
+    assert emploi.intitule == "Responsable de gestion de configuration logicielle 4 - G13"
+
+
 def test_extracteur_metier_cible_lit_un_tableau_multipage_sans_entete_repetee(fake_pdf) -> None:
     fake_pdf(_target_pages())
 
@@ -268,9 +397,84 @@ def test_extracteur_metier_cible_lit_un_tableau_multipage_sans_entete_repetee(fa
 
     assert emploi.intitule == "Métier cible fictif"
     assert emploi.type == "cible"
+    assert emploi.format_extraction == "tableau"
     assert len(emploi.competences) == 4
     assert [competence.niveau for competence in emploi.competences] == [1, 2, 3, 4]
     assert emploi.competences[0].description == "Description sur plusieurs lignes"
+
+
+def test_extracteur_cible_accepte_les_alias_de_colonnes(fake_pdf) -> None:
+    pages = _target_pages()
+    pages[0]._tables[0].rows[0] = [
+        "Compétence digitale",
+        "Détail de la compétence",
+        "Niveau de la compétence",
+    ]
+    fake_pdf(pages)
+
+    emploi = extract_metier_cible_pdf("alias.pdf")
+
+    assert [competence.intitule for competence in emploi.competences] == [
+        "Compétence un",
+        "Compétence deux",
+        "Compétence trois",
+        "Compétence quatre",
+    ]
+
+
+def test_extracteur_cible_normalise_casse_accents_pluriels_et_retours_ligne(fake_pdf) -> None:
+    pages = _target_pages()
+    pages[0]._tables[0].rows[0] = [
+        "  COMPÉTENCES\nDIGITALES ",
+        "dÉTAILS---COMPÉTENCES",
+        "Niveaux\ncompétences",
+    ]
+    fake_pdf(pages)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", PDFExtractionWarning)
+        emploi = extract_metier_cible_pdf("alias_normalise.pdf")
+
+    assert len(emploi.competences) == 4
+    assert emploi.competences[0].niveau == 1
+
+
+def test_extracteur_cible_interprete_un_tableau_par_position_en_dernier_recours(fake_pdf) -> None:
+    pages = _target_pages()
+    pages[0]._tables[0].rows[0] = ["Savoir-faire", "Explication", "Attendu"]
+    fake_pdf(pages)
+
+    with pytest.warns(PDFExtractionWarning, match="colonnes_interpretees_par_position") as caught:
+        emploi = extract_metier_cible_pdf("position.pdf")
+
+    assert len(emploi.competences) == 4
+    assert "Savoir-faire | Explication | Attendu" in str(caught[0].message)
+
+
+def test_tableaux_positionnels_ambigus_sont_rejetes_avec_les_alias(fake_pdf) -> None:
+    first = FakeTable(
+        [["Savoir-faire", "Explication", "Attendu"], ["Python", "Code", "Application"]]
+    )
+    second = FakeTable(
+        [["Domaine", "Précisions", "Palier"], ["SQL", "Requêtes", "Maîtrise"]]
+    )
+    fake_pdf(
+        [
+            FakePage(
+                1,
+                [_line("Emploi cible : Métier fictif", top=40)],
+                [first, second],
+            )
+        ]
+    )
+
+    with pytest.raises(PDFExtractionError) as caught:
+        extract_metier_cible_pdf("ambigu.pdf")
+
+    diagnostic = caught.value.diagnostics[0]
+    assert diagnostic.code == "structure_inexploitable"
+    assert "en-têtes détectés" in diagnostic.message
+    assert "Alias acceptés" in diagnostic.message
 
 
 def test_structure_normalisee_commune_et_texte_sans_niveau(fake_pdf) -> None:
@@ -349,7 +553,94 @@ def test_tableau_cible_introuvable_est_rejete(fake_pdf) -> None:
     with pytest.raises(PDFExtractionError) as caught:
         extract_metier_cible_pdf("sans_tableau.pdf")
 
-    assert caught.value.diagnostics[0].code == "tableau_introuvable"
+    diagnostic = caught.value.diagnostics[0]
+    assert diagnostic.code == "tableau_introuvable"
+    assert "en-têtes détectés" in diagnostic.message
+    assert "Alias acceptés" in diagnostic.message
+
+
+@pytest.mark.parametrize(
+    ("role", "expected_type"),
+    [("emploi_actuel", "actuel"), ("metier_cible", "cible")],
+)
+def test_fiche_rome_ne_conserve_que_savoir_faire_principaux_et_domaines_expertise(
+    fake_pdf, role: str, expected_type: str
+) -> None:
+    fake_pdf(
+        [
+            FakePage(
+                1,
+                [
+                    _line("D1401", top=20),
+                    _line("Développeur logiciel", top=40),
+                    _line("COMPÉTENCES", top=80, kind="section"),
+                    _line("Savoir-faire principaux", top=100, kind="section"),
+                    _line("• Développer une application - Transition numérique", top=120),
+                    _line("• Concevoir une API - Transition écologique", top=140),
+                    _line("• Documenter une solution", top=160),
+                    _line("Domaines d’expertise", top=180, kind="section"),
+                    _line("• Cybersécurité Transition numérique", top=200),
+                    _line("Savoir-faire secondaires", top=220, kind="section"),
+                    _line("• Administrer un serveur Transition numérique", top=240),
+                    _line("Savoirs", top=250, kind="section"),
+                    _line("• Connaître les normes de sécurité", top=255),
+                    _line("Contextes de travail", top=260, kind="section"),
+                    _line("• Texte à exclure Transition numérique", top=280),
+                    _line("Secteurs d’activité", top=290, kind="section"),
+                    _line("• Secteur à exclure", top=300),
+                ],
+            )
+        ]
+    )
+
+    emploi = read_emploi_pdf(
+        "rome.pdf", document_type=role, original_filename="Developpeur logiciel - D1401.pdf"
+    )
+
+    assert emploi.type == expected_type
+    assert emploi.format_extraction == "rome"
+    assert emploi.intitule == "Développeur logiciel"
+    assert [item.intitule for item in emploi.competences] == [
+        "Développer une application",
+        "Concevoir une API",
+        "Documenter une solution",
+        "Cybersécurité",
+    ]
+    assert [item.source_section for item in emploi.competences] == [
+        "Savoir-faire principaux",
+        "Savoir-faire principaux",
+        "Savoir-faire principaux",
+        "Domaines d’expertise",
+    ]
+    assert all(item.description is None and item.niveau is None for item in emploi.competences)
+
+
+def test_emploi_rome_sans_niveau_reste_comparable_semantiquement(fake_pdf) -> None:
+    fake_pdf(
+        [
+            FakePage(
+                1,
+                [
+                    _line("D1401", top=20),
+                    _line("Développeur logiciel", top=40),
+                    _line("Savoir-faire principaux", top=80, kind="section"),
+                    _line("• Développer une application Transition numérique", top=100),
+                ],
+            )
+        ]
+    )
+    actuel = read_emploi_pdf("rome.pdf", document_type="emploi_actuel")
+    cible_competence = Competence("Concevoir une application", None, 2)
+    cible = Emploi("Cible", "cible", None, (cible_competence,), "cible.pdf", None)
+
+    analyse = analyser_couple(
+        CoupleEmplois(actuel, cible),
+        (CorrespondanceFournie(cible_competence, actuel.competences[0], 0.8, 0.8),),
+    )
+
+    assert analyse.couverture_semantique == 1.0
+    assert analyse.correspondances[0].ecart_niveau is None
+    assert analyse.ecart_moyen is None
 
 
 @pytest.mark.parametrize("extractor_kind", ["actuel", "cible"])

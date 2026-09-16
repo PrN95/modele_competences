@@ -63,6 +63,19 @@ def test_complete_manually_verifiable_example() -> None:
     assert result.besoins_formation == ()
 
 
+def test_ecart_moyen_est_non_calculable_si_aucun_niveau_n_est_connu() -> None:
+    actuelle = competence("ACT", None)
+    cible = competence("CIB", None)
+    result = analyser_couple(
+        CoupleEmplois(actuel=emploi("ACT", "actuel", (actuelle,)), cible=emploi("CIB", "cible", (cible,))),
+        (CorrespondanceFournie(cible, actuelle, 0.8, 0.8),),
+    )
+
+    assert result.couverture_semantique == 1.0
+    assert result.ecart_moyen is None
+    assert result.correspondances[0].statut == "niveau_non_renseigne"
+
+
 def test_every_target_competence_must_have_exactly_one_supplied_match() -> None:
     current_skill = competence("ACT", 2)
     target_skills = (competence("CIB-1", 2), competence("CIB-2", 2))

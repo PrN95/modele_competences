@@ -3,6 +3,7 @@ from collections.abc import Sequence
 import pytest
 
 from app import (
+    construire_details_competences,
     construire_details_orchestration,
     construire_matrice_couples,
     construire_synthese_orchestration,
@@ -120,6 +121,22 @@ def test_orchestration_sans_cible_admissible_ne_calcule_aucun_r_epfq() -> None:
     synthese = construire_synthese_orchestration(resultat)
     assert synthese[0]["R_epfq"] is None
     assert construire_details_orchestration(resultat) == []
+    matrice = construire_matrice_couples(resultat)
+    assert len(matrice) == 2
+    assert all(ligne["Statut_Selection"] == "non retenue" for ligne in matrice)
+    assert all(
+        ligne["Raison_Non_Selection"] == "couverture inférieure au seuil"
+        for ligne in matrice
+    )
+    cible_plus_proche = resultat_emploi.selection.analyses_classees[0]
+    details = construire_details_competences(
+        cible_plus_proche,
+        seuil_sim=resultat.seuil_sim,
+        poids_dense=resultat.poids_dense,
+        poids_sparse=resultat.poids_sparse,
+    )
+    assert details
+    assert all(ligne["Recommandation de Formation"] == "" for ligne in details)
 
 
 def test_orchestration_conserve_la_triple_egalite_et_calcule_r_par_cible() -> None:
@@ -147,3 +164,64 @@ def test_orchestration_conserve_la_triple_egalite_et_calcule_r_par_cible() -> No
     } == set(cibles)
     assert all(item.r_epfq == pytest.approx(1.0) for item in resultat_emploi.cibles_retenues)
     assert all(item.analyse.besoins_formation for item in resultat_emploi.cibles_retenues)
+
+
+def test_orchestration_avec_faux_encodeur_utilise_et_restitue_les_poids() -> None:
+    actuelle = competence("A", 2)
+    cible_competence = competence("C", 2)
+    emploi_actuel = emploi("Actuel", "actuel", (actuelle,))
+    emploi_cible = emploi("Cible", "cible", (cible_competence,))
+    sorties = {
+        ("A",): sortie(((1.0, 0.0),), ({"commun": 1.0},)),
+        ("C",): sortie(((0.6, 0.8),), ({"commun": 1.0},)),
+    }
+
+    resultat_defaut = orchestrer_emplois(
+        (emploi_actuel,),
+        (emploi_cible,),
+        FauxEncodeur(sorties),
+        seuil_sim=0.0,
+        seuil_couv=0.0,
+    )
+    resultat_moitie = orchestrer_emplois(
+        (emploi_actuel,),
+        (emploi_cible,),
+        FauxEncodeur(sorties),
+        seuil_sim=0.0,
+        seuil_couv=0.0,
+        poids_dense=0.5,
+        poids_sparse=0.5,
+    )
+
+    score_defaut = resultat_defaut.resultats_emplois[0].selection.analyses_classees[
+        0
+    ].correspondances[0].score_hybride
+    score_moitie = resultat_moitie.resultats_emplois[0].selection.analyses_classees[
+        0
+    ].correspondances[0].score_hybride
+    assert resultat_defaut.poids_dense == pytest.approx(2 / 3)
+    assert resultat_defaut.poids_sparse == pytest.approx(1 / 3)
+    assert score_defaut == pytest.approx((2 / 3 * 0.6) + (1 / 3 * 1.0))
+    assert resultat_moitie.poids_dense == 0.5
+    assert resultat_moitie.poids_sparse == 0.5
+    assert score_moitie == pytest.approx(0.8)
+    assert construire_synthese_orchestration(resultat_moitie)[0]["Poids_Dense"] == 0.5
+    assert construire_matrice_couples(resultat_moitie)[0]["Poids_Sparse"] == 0.5
+    assert construire_details_orchestration(resultat_moitie)[0]["Poids_Dense"] == 0.5
+
+
+def test_orchestration_rejette_les_poids_avant_d_appeler_le_faux_encodeur() -> None:
+    emploi_actuel = emploi("Actuel", "actuel", (competence("A"),))
+    emploi_cible = emploi("Cible", "cible", (competence("C"),))
+    encodeur = FauxEncodeur({})
+
+    with pytest.raises(ValueError, match="somme.*doit être égale à 1"):
+        orchestrer_emplois(
+            (emploi_actuel,),
+            (emploi_cible,),
+            encodeur,
+            poids_dense=0.8,
+            poids_sparse=0.3,
+        )
+
+    assert encodeur.appels == []

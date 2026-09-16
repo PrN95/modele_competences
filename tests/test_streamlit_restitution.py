@@ -3,11 +3,13 @@ import io
 
 from app import (
     cle_couple_emplois,
+    cible_la_plus_proche,
     construire_details_competences,
     construire_details_orchestration,
     construire_lignes_export,
     convertir_csv,
     indexer_analyses_selectionnees,
+    formater_ecart_moyen,
 )
 from src.domain import Competence, CorrespondanceFournie, CoupleEmplois, Emploi
 from src.orchestration import (
@@ -16,6 +18,8 @@ from src.orchestration import (
     ResultatOrchestrationEmploi,
 )
 from src.scoring import analyser_couple, selectionner_cibles
+from src.remote_models import CorrespondanceCategorielleGemma, SelectionGemma
+from src.orchestration import orchestrer_emplois_llm
 
 
 def competence(nom: str, niveau: int) -> Competence:
@@ -88,6 +92,41 @@ def test_export_recommends_only_selected_target_and_marks_it_selected() -> None:
     assert ligne_exclue["Recommandation_Formation"] == ""
     assert ligne_exclue["Seuil_Sim"] == 0.7
     assert ligne_exclue["Seuil_Couv"] == 0.7
+    assert ligne_exclue["Poids_Dense"] == 2 / 3
+    assert ligne_exclue["Poids_Sparse"] == 1 / 3
+
+
+def test_details_affichent_les_composantes_non_calculees_selon_les_poids() -> None:
+    actuelle = competence("Actuelle", 2)
+    actuel = emploi("Actuel", "actuel", (actuelle,))
+    cible = emploi("Cible", "cible", (competence("Cible", 2),))
+
+    dense_only = analyser_couple(
+        CoupleEmplois(actuel, cible),
+        (CorrespondanceFournie(cible.competences[0], actuelle, 0.8, None),),
+        seuil_sim=0.0,
+        poids_dense=1.0,
+        poids_sparse=0.0,
+    )
+    sparse_only = analyser_couple(
+        CoupleEmplois(actuel, cible),
+        (CorrespondanceFournie(cible.competences[0], actuelle, None, 0.9),),
+        seuil_sim=0.0,
+        poids_dense=0.0,
+        poids_sparse=1.0,
+    )
+
+    detail_dense = construire_details_competences(
+        dense_only, poids_dense=1.0, poids_sparse=0.0
+    )[0]
+    detail_sparse = construire_details_competences(
+        sparse_only, poids_dense=0.0, poids_sparse=1.0
+    )[0]
+
+    assert detail_dense["Score Sparse (L_ac)"] == "Non calculé, poids sparse = 0"
+    assert detail_dense["Score Hybride (H_ac)"] == "0.8000"
+    assert detail_sparse["Score Dense (D_ac)"] == "Non calculé, poids dense = 0"
+    assert detail_sparse["Score Hybride (H_ac)"] == "0.9000"
 
 
 def test_selection_uses_pair_identity_instead_of_enriched_analysis_equality() -> None:
@@ -107,6 +146,23 @@ def test_selection_uses_pair_identity_instead_of_enriched_analysis_equality() ->
     assert analyse_initiale != analyse_enrichie
     assert cle_couple_emplois(analyse_initiale) == cle_couple_emplois(analyse_enrichie)
     assert index[cle_couple_emplois(analyse_initiale)] is analyse_enrichie
+
+
+def test_cible_la_plus_proche_est_disponible_meme_si_aucune_cible_n_est_retenue() -> None:
+    actuelle = competence("Compétence actuelle", 1)
+    actuel = emploi("Emploi actuel", "actuel", (actuelle,))
+    cible_proche = emploi("Emploi cible proche", "cible", (competence("Proche", 2),))
+    cible_lointaine = emploi("Emploi cible lointain", "cible", (competence("Lointaine", 2),))
+    proche = analyser(
+        actuel, cible_proche, ((cible_proche.competences[0], actuelle, 0.6, 0.6, None),)
+    )
+    lointaine = analyser(
+        actuel, cible_lointaine, ((cible_lointaine.competences[0], actuelle, 0.4, 0.4, None),)
+    )
+    selection = selectionner_cibles((proche, lointaine))
+
+    assert selection.meilleures_analyses == ()
+    assert cible_la_plus_proche(selection) is proche
 
 
 def test_absent_competence_keeps_its_own_recommendation_in_details_and_export() -> None:
@@ -193,6 +249,8 @@ def test_absent_competence_keeps_its_own_recommendation_in_details_and_export() 
     assert ligne_consolidee["Statut"] == "Absente"
     assert ligne_consolidee["Score_Hybride_H_ac"] == 0.6
     assert ligne_consolidee["Seuil_Sim"] == 0.7
+    assert ligne_consolidee["Poids_Dense"] == 2 / 3
+    assert ligne_consolidee["Poids_Sparse"] == 1 / 3
     assert ligne_consolidee["Recommandation_Formation"] == (
         "Formation complète nécessaire pour acquérir la compétence"
     )
@@ -206,6 +264,8 @@ def test_absent_competence_keeps_its_own_recommendation_in_details_and_export() 
     assert ligne_csv["Statut"] == "Absente"
     assert ligne_csv["Score_Hybride_H_ac"] == "0.6"
     assert ligne_csv["Seuil_Sim"] == "0.7"
+    assert float(ligne_csv["Poids_Dense"]) == 2 / 3
+    assert float(ligne_csv["Poids_Sparse"]) == 1 / 3
     assert ligne_csv["Recommandation_Formation"] == (
         "Formation complète nécessaire pour acquérir la compétence"
     )
@@ -250,3 +310,65 @@ def test_tie_detail_is_displayed_exported_and_all_triple_ties_stay_selected() ->
     }
     assert all(item["Detail_Egalite"] == detail for item in lignes)
     assert all(item["Recommandation_Formation"] == "Formation légère pour progresser d’un niveau" for item in lignes)
+
+
+def test_gemma_restitution_omits_all_scores_thresholds_and_weights() -> None:
+    actuelle = competence("Compétence actuelle", 2)
+    actuel = emploi("Emploi actuel", "actuel", (actuelle,))
+    cible = emploi("Emploi cible", "cible", (competence("Compétence cible", 3),))
+
+    class FauxSelecteur:
+        def selectionner(self, emploi_actuel, emplois_cibles):
+            return SelectionGemma(
+                cible,
+                (
+                    CorrespondanceCategorielleGemma(
+                        cible.competences[0], actuelle, "Reconnue", 2, 3, 1,
+                        "niveau_insuffisant", "Recommandation Gemma"
+                    ),
+                ),
+                1.0, 0.0, 1.0, 1.0, "{}",
+            )
+
+    resultat = orchestrer_emplois_llm((actuel,), (cible,), FauxSelecteur())
+    analyse = resultat.resultats_emplois[0].cibles_retenues[0].analyse
+    detail_interface = construire_details_competences(
+        analyse,
+        seuil_sim=resultat.seuil_sim,
+        poids_dense=resultat.poids_dense,
+        poids_sparse=resultat.poids_sparse,
+        modele=resultat.modele,
+        type_score=resultat.type_score,
+    )[0]
+    detail_export = construire_details_orchestration(resultat)[0]
+
+    assert detail_interface["Décision"] == "Reconnue"
+    assert detail_interface["Compétence actuelle correspondante"] == actuelle.intitule
+    assert not any(
+        mot in cle.lower()
+        for cle in detail_interface
+        for mot in ("score", "seuil", "poids")
+    )
+    assert not any(
+        mot in cle.lower()
+        for cle in detail_export
+        for mot in ("score", "seuil", "poids")
+    )
+
+
+def test_restitution_signale_un_ecart_non_calculable_si_niveau_absent() -> None:
+    actuelle = Competence("Compétence actuelle", None, None)
+    cible_competence = Competence("Compétence cible", None, None)
+    actuel = emploi("Actuel sans niveau", "actuel", (actuelle,))
+    cible = emploi("Cible sans niveau", "cible", (cible_competence,))
+    analyse = analyser_couple(
+        CoupleEmplois(actuel, cible),
+        (CorrespondanceFournie(cible_competence, actuelle, 0.8, 0.8),),
+    )
+
+    detail = construire_details_competences(analyse)[0]
+    assert detail["Niveau Cible"] == "Non renseigné"
+    assert detail["Niveau Actuel"] == "Non renseigné"
+    assert detail["Écart Niveau"] == "Non calculable, niveau absent"
+    assert detail["État comparaison niveau"] == "Correspondance, niveau non comparable"
+    assert formater_ecart_moyen(analyse.ecart_moyen) == "Non calculable, niveau absent"

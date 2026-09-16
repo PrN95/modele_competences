@@ -6,7 +6,12 @@ from math import isfinite, sqrt
 from numbers import Real
 from collections.abc import Mapping, Sequence
 
-from src.config import DENSE_WEIGHT, SEMANTIC_MATCH_THRESHOLD, SPARSE_WEIGHT
+from src.config import (
+    DENSE_WEIGHT,
+    HYBRID_WEIGHTS_SUM_TOLERANCE,
+    SEMANTIC_MATCH_THRESHOLD,
+    SPARSE_WEIGHT,
+)
 from src.domain import (
     Competence,
     CorrespondanceCompetence,
@@ -19,28 +24,91 @@ from src.domain import (
 from src.embeddings import EncodeurCompetences
 
 
-def calculer_score_hybride(score_dense: float, score_sparse: float) -> float:
-    """Calcule ``H = 2/3 × dense + 1/3 × sparse`` sans poids arrondis."""
+def calculer_score_hybride(
+    score_dense: float | None,
+    score_sparse: float | None,
+    poids_dense: float | Fraction | None = None,
+    poids_sparse: float | Fraction | None = None,
+) -> float:
+    """Calcule le score hybride avec les poids fournis, sans les normaliser."""
 
-    return float(_score_hybride_exact(score_dense, score_sparse))
+    return float(
+        _score_hybride_exact(
+            score_dense,
+            score_sparse,
+            poids_dense,
+            poids_sparse,
+        )
+    )
+
+
+def valider_poids_hybrides(
+    poids_dense: float | Fraction | None = None,
+    poids_sparse: float | Fraction | None = None,
+) -> tuple[Fraction, Fraction]:
+    """Valide deux poids indépendants dont la somme doit valoir 1."""
+
+    dense = (
+        DENSE_WEIGHT
+        if poids_dense is None
+        else _as_fraction(poids_dense, "poids_dense")
+    )
+    sparse = (
+        SPARSE_WEIGHT
+        if poids_sparse is None
+        else _as_fraction(poids_sparse, "poids_sparse")
+    )
+    if not 0 <= dense <= 1:
+        raise ValueError("poids_dense doit être compris entre 0 et 1.")
+    if not 0 <= sparse <= 1:
+        raise ValueError("poids_sparse doit être compris entre 0 et 1.")
+    if abs(float((dense + sparse) - 1)) > HYBRID_WEIGHTS_SUM_TOLERANCE:
+        raise ValueError(
+            "La somme de poids_dense et poids_sparse doit être égale à 1 "
+            f"(somme reçue : {float(dense + sparse):.12g})."
+        )
+    return dense, sparse
 
 
 def analyser_correspondance(
     correspondance: CorrespondanceFournie,
     seuil_sim: float | Fraction | None = None,
+    *,
+    poids_dense: float | Fraction | None = None,
+    poids_sparse: float | Fraction | None = None,
 ) -> CorrespondanceCompetence:
     """Applique le seuil sémantique puis compare séparément les niveaux."""
 
-    score_hybride_exact = _score_hybride_exact(
-        correspondance.score_dense,
-        correspondance.score_sparse,
-    )
+    if correspondance.score_llm is not None:
+        if correspondance.score_dense is not None or correspondance.score_sparse is not None:
+            raise ValueError("Une correspondance LLM ne doit contenir aucun score d'embedding.")
+        score_similarite_exact = _as_fraction(correspondance.score_llm, "score_llm")
+        score_hybride_exact = None
+    else:
+        poids_dense_effectif, poids_sparse_effectif = valider_poids_hybrides(
+            poids_dense,
+            poids_sparse,
+        )
+        if (
+            (poids_dense_effectif > 0 and correspondance.score_dense is None)
+            or (poids_sparse_effectif > 0 and correspondance.score_sparse is None)
+        ):
+            raise ValueError(
+                "Une correspondance d'embedding exige les seuls scores dont le poids est positif."
+            )
+        score_hybride_exact = _score_hybride_exact(
+            correspondance.score_dense,
+            correspondance.score_sparse,
+            poids_dense,
+            poids_sparse,
+        )
+        score_similarite_exact = score_hybride_exact
     seuil_sim_exact = (
         _as_fraction(seuil_sim, "seuil_sim")
         if seuil_sim is not None
         else SEMANTIC_MATCH_THRESHOLD
     )
-    reconnue = score_hybride_exact >= seuil_sim_exact
+    reconnue = score_similarite_exact >= seuil_sim_exact
 
     if reconnue and correspondance.competence_actuelle is None:
         raise ValueError(
@@ -54,26 +122,59 @@ def analyser_correspondance(
         else 0
     )
     niveau_requis = correspondance.competence_cible.niveau
-    ecart_niveau = max(0, niveau_requis - niveau_actuel)
-    statut = _determiner_statut(reconnue, ecart_niveau)
+    if not reconnue:
+        # Le niveau interne 0 reste réservé à une compétence non reconnue.
+        # Avec une cible renseignée, on préserve l'écart historique depuis 0.
+        # Sans niveau cible, aucune valeur n'est inventée.
+        ecart_niveau = (
+            max(0, niveau_requis - niveau_actuel)
+            if niveau_requis is not None
+            else None
+        )
+        statut = "absente"
+    elif niveau_actuel is None or niveau_requis is None:
+        ecart_niveau = None
+        statut = "niveau_non_renseigne"
+    else:
+        ecart_niveau = max(0, niveau_requis - niveau_actuel)
+        statut = _determiner_statut(reconnue, ecart_niveau)
 
     return CorrespondanceCompetence(
         competence_cible=correspondance.competence_cible,
         competence_actuelle=correspondance.competence_actuelle,
-        score_dense=float(correspondance.score_dense),
-        score_sparse=float(correspondance.score_sparse),
-        score_hybride=float(score_hybride_exact),
+        score_dense=(
+            float(correspondance.score_dense)
+            if correspondance.score_dense is not None
+            else None
+        ),
+        score_sparse=(
+            float(correspondance.score_sparse)
+            if correspondance.score_sparse is not None
+            else None
+        ),
+        score_hybride=(
+            float(score_hybride_exact) if score_hybride_exact is not None else None
+        ),
+        score_llm=(
+            float(correspondance.score_llm)
+            if correspondance.score_llm is not None
+            else None
+        ),
         reconnue=reconnue,
         niveau_actuel=niveau_actuel,
         ecart_niveau=ecart_niveau,
         statut=statut,
         detail_egalite=correspondance.detail_egalite,
+        justification_courte=correspondance.justification_courte,
     )
 
 
 def generer_correspondances_semantiques(
     couple: CoupleEmplois,
     encodeur: EncodeurCompetences,
+    *,
+    poids_dense: float | Fraction | None = None,
+    poids_sparse: float | Fraction | None = None,
 ) -> tuple[CorrespondanceFournie, ...]:
     """Sélectionne la meilleure compétence actuelle pour chaque cible."""
 
@@ -84,19 +185,31 @@ def generer_correspondances_semantiques(
 
     encodage_actuel = encodeur.encoder(couple.actuel.competences)
     encodage_cible = encodeur.encoder(couple.cible.competences)
+    poids_dense_effectif, poids_sparse_effectif = valider_poids_hybrides(
+        poids_dense,
+        poids_sparse,
+    )
     correspondances: list[CorrespondanceFournie] = []
 
     for cible_index, competence_cible in enumerate(couple.cible.competences):
         candidates: list[_CandidateDirect] = []
 
         for actuel_index, competence_actuelle in enumerate(couple.actuel.competences):
-            score_dense = calculer_score_dense(
-                encodage_actuel.vecteurs_dense[actuel_index],
-                encodage_cible.vecteurs_dense[cible_index],
+            score_dense = (
+                calculer_score_dense(
+                    encodage_actuel.vecteurs_dense[actuel_index],
+                    encodage_cible.vecteurs_dense[cible_index],
+                )
+                if poids_dense_effectif > 0
+                else None
             )
-            score_sparse = calculer_score_sparse(
-                encodage_actuel.poids_sparse[actuel_index],
-                encodage_cible.poids_sparse[cible_index],
+            score_sparse = (
+                calculer_score_sparse(
+                    encodage_actuel.poids_sparse[actuel_index],
+                    encodage_cible.poids_sparse[cible_index],
+                )
+                if poids_sparse_effectif > 0
+                else None
             )
             candidates.append(
                 _CandidateDirect(
@@ -105,7 +218,12 @@ def generer_correspondances_semantiques(
                     competence_actuelle=competence_actuelle,
                     score_dense=score_dense,
                     score_sparse=score_sparse,
-                    score_hybride=_score_hybride_exact(score_dense, score_sparse),
+                    score_hybride=_score_hybride_exact(
+                        score_dense,
+                        score_sparse,
+                        poids_dense_effectif,
+                        poids_sparse_effectif,
+                    ),
                 )
             )
 
@@ -121,8 +239,8 @@ class _CandidateDirect:
     index_source: int
     competence_cible: Competence
     competence_actuelle: Competence
-    score_dense: float
-    score_sparse: float
+    score_dense: float | None
+    score_sparse: float | None
     score_hybride: Fraction
 
 
@@ -135,20 +253,30 @@ def _selectionner_candidate_directe(
     ex_aequo_hybride = tuple(
         item for item in candidates if item.score_hybride == meilleur_hybride
     )
-    meilleur_niveau = max(item.competence_actuelle.niveau for item in ex_aequo_hybride)
+    # Un niveau absent ne départage pas une égalité sémantique ; un niveau connu
+    # reste prioritaire, comme auparavant, lorsqu'il est disponible.
+    meilleur_niveau = max(
+        item.competence_actuelle.niveau or 0 for item in ex_aequo_hybride
+    )
     ex_aequo_niveau = tuple(
         item
         for item in ex_aequo_hybride
-        if item.competence_actuelle.niveau == meilleur_niveau
+        if (item.competence_actuelle.niveau or 0) == meilleur_niveau
     )
-    meilleur_sparse = max(
-        _as_fraction(item.score_sparse, "score_sparse") for item in ex_aequo_niveau
-    )
-    ex_aequo_persistants = tuple(
-        item
-        for item in ex_aequo_niveau
-        if _as_fraction(item.score_sparse, "score_sparse") == meilleur_sparse
-    )
+    if all(item.score_sparse is None for item in ex_aequo_niveau):
+        ex_aequo_persistants = ex_aequo_niveau
+    else:
+        meilleur_sparse = max(
+            _as_fraction(item.score_sparse, "score_sparse")
+            for item in ex_aequo_niveau
+            if item.score_sparse is not None
+        )
+        ex_aequo_persistants = tuple(
+            item
+            for item in ex_aequo_niveau
+            if item.score_sparse is not None
+            and _as_fraction(item.score_sparse, "score_sparse") == meilleur_sparse
+        )
     choisie = min(ex_aequo_persistants, key=_cle_deterministe_candidate)
     detail_egalite = None
     if len(ex_aequo_persistants) > 1:
@@ -157,7 +285,9 @@ def _selectionner_candidate_directe(
             for item in sorted(ex_aequo_persistants, key=_cle_deterministe_candidate)
         )
         detail_egalite = (
-            "Égalité exacte persistante de H_ac, du niveau actuel et de L_ac entre "
+            "Égalité exacte persistante de H_ac, du niveau actuel"
+            + (" et de L_ac" if choisie.score_sparse is not None else "")
+            + " entre "
             f"{noms} ; choix déterministe : « {choisie.competence_actuelle.intitule} »."
         )
 
@@ -184,8 +314,8 @@ def _cle_deterministe_candidate(candidate: _CandidateDirect) -> tuple[str, str, 
 class _CandidateInverse:
     emploi_cible: Emploi
     competence_cible: Competence
-    score_dense: float
-    score_sparse: float
+    score_dense: float | None
+    score_sparse: float | None
     score_hybride: float
 
 
@@ -195,6 +325,9 @@ def controler_competences_actuelles_non_reprises(
     emplois_cibles_selectionnes: Sequence[Emploi],
     encodeur: EncodeurCompetences,
     seuil_sim: float | Fraction | None = None,
+    *,
+    poids_dense: float | Fraction | None = None,
+    poids_sparse: float | Fraction | None = None,
 ) -> tuple[SignalementCompetenceActuelle, ...]:
     """Signale les compétences actuelles absentes des cibles sélectionnées.
 
@@ -223,6 +356,10 @@ def controler_competences_actuelles_non_reprises(
         if seuil_sim is not None
         else SEMANTIC_MATCH_THRESHOLD
     )
+    poids_dense_effectif, poids_sparse_effectif = valider_poids_hybrides(
+        poids_dense,
+        poids_sparse,
+    )
 
     def est_selectionnee(cible: Emploi) -> bool:
         return any(cible is item for item in selectionnees)
@@ -236,13 +373,21 @@ def controler_competences_actuelles_non_reprises(
         encodage_cible = encodeur.encoder(cible.competences)
         for actuel_index in range(len(emploi_actuel.competences)):
             for cible_index, competence_cible in enumerate(cible.competences):
-                score_dense = calculer_score_dense(
-                    encodage_actuel.vecteurs_dense[actuel_index],
-                    encodage_cible.vecteurs_dense[cible_index],
+                score_dense = (
+                    calculer_score_dense(
+                        encodage_actuel.vecteurs_dense[actuel_index],
+                        encodage_cible.vecteurs_dense[cible_index],
+                    )
+                    if poids_dense_effectif > 0
+                    else None
                 )
-                score_sparse = calculer_score_sparse(
-                    encodage_actuel.poids_sparse[actuel_index],
-                    encodage_cible.poids_sparse[cible_index],
+                score_sparse = (
+                    calculer_score_sparse(
+                        encodage_actuel.poids_sparse[actuel_index],
+                        encodage_cible.poids_sparse[cible_index],
+                    )
+                    if poids_sparse_effectif > 0
+                    else None
                 )
                 candidats_par_actuelle[actuel_index].append(
                     _CandidateInverse(
@@ -250,7 +395,12 @@ def controler_competences_actuelles_non_reprises(
                         competence_cible=competence_cible,
                         score_dense=score_dense,
                         score_sparse=score_sparse,
-                        score_hybride=calculer_score_hybride(score_dense, score_sparse),
+                        score_hybride=calculer_score_hybride(
+                            score_dense,
+                            score_sparse,
+                            poids_dense_effectif,
+                            poids_sparse_effectif,
+                        ),
                     )
                 )
 
@@ -267,6 +417,8 @@ def controler_competences_actuelles_non_reprises(
         if _score_hybride_exact(
             meilleure_selectionnee.score_dense,
             meilleure_selectionnee.score_sparse,
+            poids_dense_effectif,
+            poids_sparse_effectif,
         ) >= seuil_sim_exact:
             continue
 
@@ -281,6 +433,8 @@ def controler_competences_actuelles_non_reprises(
         presente_autre = meilleure_autre is not None and _score_hybride_exact(
             meilleure_autre.score_dense,
             meilleure_autre.score_sparse,
+            poids_dense_effectif,
+            poids_sparse_effectif,
         ) >= seuil_sim_exact
 
         if presente_autre:
@@ -339,10 +493,23 @@ def calculer_score_sparse(
     return float(prod_scalaire / (norme_actuel * norme_cible))
 
 
-def _score_hybride_exact(score_dense: float, score_sparse: float) -> Fraction:
-    dense = _as_fraction(score_dense, "score_dense")
-    sparse = _as_fraction(score_sparse, "score_sparse")
-    return (DENSE_WEIGHT * dense) + (SPARSE_WEIGHT * sparse)
+def _score_hybride_exact(
+    score_dense: float | None,
+    score_sparse: float | None,
+    poids_dense: float | Fraction | None = None,
+    poids_sparse: float | Fraction | None = None,
+) -> Fraction:
+    poids_dense_exact, poids_sparse_exact = valider_poids_hybrides(
+        poids_dense,
+        poids_sparse,
+    )
+    if poids_dense_exact > 0 and score_dense is None:
+        raise ValueError("score_dense est requis lorsque poids_dense est positif.")
+    if poids_sparse_exact > 0 and score_sparse is None:
+        raise ValueError("score_sparse est requis lorsque poids_sparse est positif.")
+    dense = _as_fraction(score_dense, "score_dense") if score_dense is not None else 0
+    sparse = _as_fraction(score_sparse, "score_sparse") if score_sparse is not None else 0
+    return (poids_dense_exact * dense) + (poids_sparse_exact * sparse)
 
 
 def _as_fraction(value: float, field_name: str) -> Fraction:

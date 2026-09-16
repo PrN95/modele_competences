@@ -9,6 +9,7 @@ from src.matching import (
     generer_correspondances_semantiques,
 )
 from src.scoring import analyser_couple, analyser_couple_semantiquement
+import src.matching as matching
 
 
 def competence(identifier: str, niveau: int = 2) -> Competence:
@@ -48,6 +49,71 @@ def sortie(dense, sparse=None) -> SortieEncodage:
 
 def test_sparse_score_is_cosine_similarity() -> None:
     assert calculer_score_sparse({"a": 0.5, "b": 0.2}, {"a": 0.4, "c": 1.0}) == pytest.approx(10 / 29)
+
+
+@pytest.mark.parametrize(
+    ("poids_dense", "poids_sparse", "score_absent", "score_attendu"),
+    [
+        (1.0, 0.0, "sparse", 0.6),
+        (0.0, 1.0, "dense", 1.0),
+    ],
+)
+def test_mode_une_seule_composante_ne_calcule_pas_le_score_inactif(
+    monkeypatch,
+    poids_dense: float,
+    poids_sparse: float,
+    score_absent: str,
+    score_attendu: float,
+) -> None:
+    actuelle, cible = competence("A"), competence("C")
+    couple = CoupleEmplois(emploi("ACT", "actuel", (actuelle,)), emploi("CIB", "cible", (cible,)))
+    encodeur = FauxEncodeur(
+        {
+            ("A",): sortie(((1.0, 0.0),), ({"commun": 1.0},)),
+            ("C",): sortie(((0.6, 0.8),), ({"commun": 1.0},)),
+        }
+    )
+
+    def interdit(*args, **kwargs):
+        raise AssertionError(f"Le score {score_absent} ne doit pas être calculé.")
+
+    monkeypatch.setattr(matching, f"calculer_score_{score_absent}", interdit)
+    resultat = analyser_couple_semantiquement(
+        couple,
+        encodeur,
+        seuil_sim=0.0,
+        poids_dense=poids_dense,
+        poids_sparse=poids_sparse,
+    )
+    correspondance = resultat.correspondances[0]
+
+    assert getattr(correspondance, f"score_{score_absent}") is None
+    assert correspondance.score_hybride == pytest.approx(score_attendu)
+
+
+def test_mode_hybride_calcule_et_pondere_les_deux_scores(monkeypatch) -> None:
+    actuelle, cible = competence("A"), competence("C")
+    couple = CoupleEmplois(emploi("ACT", "actuel", (actuelle,)), emploi("CIB", "cible", (cible,)))
+    encodeur = FauxEncodeur(
+        {
+            ("A",): sortie(((1.0, 0.0),), ({"commun": 1.0},)),
+            ("C",): sortie(((0.6, 0.8),), ({"commun": 1.0},)),
+        }
+    )
+    appels = {"dense": 0, "sparse": 0}
+    dense, sparse = matching.calculer_score_dense, matching.calculer_score_sparse
+    monkeypatch.setattr(matching, "calculer_score_dense", lambda *args: (appels.__setitem__("dense", appels["dense"] + 1), dense(*args))[1])
+    monkeypatch.setattr(matching, "calculer_score_sparse", lambda *args: (appels.__setitem__("sparse", appels["sparse"] + 1), sparse(*args))[1])
+
+    resultat = analyser_couple_semantiquement(
+        couple, encodeur, seuil_sim=0.0, poids_dense=0.5, poids_sparse=0.5
+    )
+    correspondance = resultat.correspondances[0]
+
+    assert appels == {"dense": 1, "sparse": 1}
+    assert correspondance.score_dense == pytest.approx(0.6)
+    assert correspondance.score_sparse == pytest.approx(1.0)
+    assert correspondance.score_hybride == pytest.approx(0.8)
 
 
 def test_best_current_competence_is_selected_for_each_target() -> None:

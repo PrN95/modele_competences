@@ -13,7 +13,7 @@ def determiner_besoin_formation(
 ) -> BesoinFormation | None:
     """Retourne la progression nécessaire, ou ``None`` si le niveau suffit."""
 
-    if correspondance.statut == "niveau_suffisant":
+    if correspondance.statut in ("niveau_suffisant", "niveau_non_renseigne"):
         return None
 
     if correspondance.statut == "absente":
