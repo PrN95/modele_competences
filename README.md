@@ -162,7 +162,4 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider
 
 ## Limites actuelles
 
-- Plusieurs PDF d'emploi actuel et d'emploi cible peuvent être chargés ; l'interface orchestre automatiquement tous les emplois actuels contre tous les emplois cibles.
-- Il n'existe pas encore de test automatisé de l'interface Streamlit.
-- Les extracteurs sont testés avec des PDF simulés, pas encore avec des PDF réels intégrés à la suite.
-- Le véritable BGE-M3 n'est jamais chargé dans pytest ; son contrôle d'intégration reste manuel.
+Les test avec ColBERT activité et avec ajout d'un reranker n'ont finalement pas été effectué.
