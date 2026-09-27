@@ -162,4 +162,4 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider
 
 ## Limites actuelles
 
-Les test avec ColBERT activité et avec ajout d'un reranker n'ont finalement pas été effectué.
+Les tests avec ColBERT activé et avec ajout d'un reranker n'ont finalement pas été effectués.
