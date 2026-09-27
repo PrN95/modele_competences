@@ -4,9 +4,9 @@ Ce projet est un outil local d'aide à la décision RH. Pour un emploi actuel, i
 
 Un emploi représente toujours un profil type, jamais une personne. Plusieurs emplois actuels peuvent être associés au même emploi cible. Les sources d'instructions pour l’assistance IA sont dans `AGENTS.md` et `docs/Feuille_cadrage_IA.docx`.
 
-## Expérimentation ROME (isolée de l'application)
+## Expérimentation ROME
 
-Le module `src.rome` prépare un corpus pour de futures campagnes BGE-M3 et Qwen Embedding, sans modifier le matching de production ni l'interface Streamlit. La table de vérité de référence par défaut est `data/rome/Similarité Emplois ROME 6.xlsx` ; les tables antérieures ne sont utilisées que si elles sont explicitement passées en argument. Les relations sont non directionnelles et le code ROME extrait de l'en-tête PDF est la clé de rapprochement.
+Le module `src.rome` prépare un corpus pour les campagnes BGE-M3 et Qwen Embedding, sans modifier le matching de production ni l'interface Streamlit. La table de vérité de référence par défaut est `data/rome/Similarité Emplois ROME 6.xlsx` ; les tables antérieures ne sont utilisées que si elles sont explicitement passées en argument. Les relations sont non directionnelles et le code ROME extrait de l'en-tête PDF est la clé de rapprochement.
 
 ```bash
 .venv/bin/python scripts/validate_rome_corpus.py
@@ -131,7 +131,7 @@ Après triple égalité, toutes les cibles ex aequo sont conservées pour arbitr
 
 ## Interface Streamlit et exports
 
-L'interface Streamlit est déjà implémentée. Elle permet :
+L'interface Streamlit permet :
 
 - le dépôt séparé de plusieurs PDF d'emplois actuels et de plusieurs PDF d'emplois cibles ;
 - l'analyse globale de tous les emplois actuels contre toutes les cibles ;
@@ -148,16 +148,6 @@ Lancement local :
 
 ```bash
 .venv/bin/streamlit run app.py
-```
-
-## Tests et validation
-
-La suite automatique contient **115 tests réussis**. Elle utilise uniquement des faux encodeurs, des réponses HTTP simulées, de fausses sorties de modèle et des PDF simulés. Une protection interdit explicitement tout chargement du véritable BGE-M3 pendant pytest ; aucun test ne contacte un endpoint distant configuré.
-
-Le test d'intégration du modèle local reste volontairement manuel, explicite et séparé de pytest.
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 .venv/bin/pytest -p no:cacheprovider
 ```
 
 ## Limites actuelles
