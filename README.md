@@ -2,7 +2,7 @@
 
 Ce projet est un outil local d'aide à la décision RH. Pour un emploi actuel, il compare les compétences et les niveaux avec plusieurs emplois cibles, écarte les cibles non admissibles, sélectionne la ou les meilleures et explique les écarts ainsi que les besoins de formation.
 
-Un emploi représente toujours un profil type, jamais une personne. Plusieurs emplois actuels peuvent être associés au même emploi cible. Les sources de vérité sont `AGENTS.md` et `docs/Feuille_cadrage_IA.docx`.
+Un emploi représente toujours un profil type, jamais une personne. Plusieurs emplois actuels peuvent être associés au même emploi cible. Les sources d'instructions pour l’assistance IA sont dans `AGENTS.md` et `docs/Feuille_cadrage_IA.docx`.
 
 ## Expérimentation ROME (isolée de l'application)
 
