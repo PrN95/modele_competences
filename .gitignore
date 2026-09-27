@@ -13,6 +13,7 @@ __pycache__/
 # Modèles volumineux et sorties temporaires
 models/
 outputs/
+bge-m3.tar.gz
 
 # Corpus ROME local et sorties/caches d'expérimentation
 data/rome/Fiches emploi ROME/
