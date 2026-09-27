@@ -307,6 +307,7 @@ def construire_synthese_orchestration(
     lignes: list[dict[str, object]] = []
     for resultat_emploi in resultat.resultats_emplois:
         retenues = resultat_emploi.cibles_retenues
+        cible_plus_proche = cible_la_plus_proche(resultat_emploi.selection)
         if not retenues:
             ligne = {
                     "modele": resultat.modele,
@@ -314,6 +315,14 @@ def construire_synthese_orchestration(
                     "Emploi_Actuel": resultat_emploi.emploi_actuel.intitule,
                     "Fichier_Source_Actuel": resultat_emploi.emploi_actuel.fichier_source,
                     "Emplois_Cibles_Retenus": "",
+                    "Cible_La_Plus_Proche": (
+                        cible_plus_proche.emploi_cible.intitule
+                        if cible_plus_proche is not None else ""
+                    ),
+                    "Score_Global_Cible_La_Plus_Proche": (
+                        float(cible_plus_proche.g_ef)
+                        if cible_plus_proche is not None else None
+                    ),
                     "Statut": MESSAGE_AUCUNE_CIBLE,
                     "G_epfq": None,
                     "Gs_epfq": None,
@@ -339,6 +348,14 @@ def construire_synthese_orchestration(
                 "Fichier_Source_Actuel": resultat_emploi.emploi_actuel.fichier_source,
                 "Emplois_Cibles_Retenus": " | ".join(
                     cible.analyse.emploi_cible.intitule for cible in retenues
+                ),
+                "Cible_La_Plus_Proche": (
+                    cible_plus_proche.emploi_cible.intitule
+                    if cible_plus_proche is not None else ""
+                ),
+                "Score_Global_Cible_La_Plus_Proche": (
+                    float(cible_plus_proche.g_ef)
+                    if cible_plus_proche is not None else None
                 ),
                 "Statut": (
                     MESSAGE_ARBITRAGE_RH if len(retenues) > 1 else "Retenu"
@@ -377,6 +394,9 @@ def construire_matrice_couples(
         for analyse in resultat_emploi.selection.analyses_classees:
             cle = cle_couple_emplois(analyse)
             est_selectionnee = cle in reutilisation_par_cible
+            est_cible_la_plus_proche = analyse is cible_la_plus_proche(
+                resultat_emploi.selection
+            )
             raison_non_selection = ""
             if not est_selectionnee:
                 raison_non_selection = (
@@ -395,6 +415,7 @@ def construire_matrice_couples(
                     "Gs_epfq": float(analyse.gs_ef),
                     "Ecart_Moyen_epfq": analyse.ecart_moyen,
                     "Est_Selectionne": est_selectionnee,
+                    "Est_Cible_La_Plus_Proche": est_cible_la_plus_proche,
                     "Statut_Selection": "retenue" if est_selectionnee else "non retenue",
                     "Raison_Non_Selection": raison_non_selection,
                     "R_epfq": (
@@ -721,7 +742,7 @@ def afficher_resultat_modele(
         cible_plus_proche = cible_la_plus_proche(resultat_emploi.selection)
         if cible_plus_proche is not None:
             st.markdown(
-                "##### Emploi cible le plus proche : "
+                "##### Cible la plus proche : "
                 f"**{cible_plus_proche.emploi_cible.intitule}**"
             )
         if not resultat_emploi.cibles_retenues:
@@ -743,7 +764,7 @@ def afficher_resultat_modele(
                 st.warning("Aucun emploi cible analysable pour cet emploi actuel")
                 continue
             col_g, col_gs, col_ecart = st.columns(3)
-            col_g.metric("G_epfq / couverture", f"{cible_plus_proche.g_ef:.2%}")
+            col_g.metric("Score global (G_epfq)", f"{cible_plus_proche.g_ef:.2%}")
             col_gs.metric("Gs_epfq", f"{cible_plus_proche.gs_ef:.2%}")
             col_ecart.metric("Écart moyen", formater_ecart_moyen(cible_plus_proche.ecart_moyen))
             st.dataframe(

@@ -57,6 +57,7 @@ def main() -> int:
     parser.add_argument("--model-path", default=str(MODEL_PATH), help="Dossier local du modèle BGE-M3.")
     parser.add_argument("--reference", default=str(ROME_REFERENCE_TABLE), help="Table de vérité ROME (défaut : ROME 6).")
     parser.add_argument("--campaign-name", default=f"campagne_dense_only_bge_m3_local_{time.strftime('%Y%m%dT%H%M%S')}", help="Nom du nouveau dossier sous outputs/rome/experiments_2/.")
+    parser.add_argument("--source-cache", help="Cache dense local compatible à réutiliser sans charger le modèle.")
     args = parser.parse_args()
     start = time.perf_counter()
     model_path = Path(args.model_path).expanduser().resolve()
@@ -69,10 +70,17 @@ def main() -> int:
     output = rome_campaign_output_directory(args.campaign_name)
     if output.exists():
         raise FileExistsError(f"Le dossier de campagne existe déjà : {output}")
-    print(f"BGE-M3 local : {model_path} (encodage séquentiel, lot 1)")
-    cache = RomeDenseCache(prepared, f"bge-m3-local-{model_path}", output / "cache")
-    vectors, embeddings_cached = load_or_create_embeddings(cache, _local_dense_encoder(model_path), print)
-    matrix, matrix_cached = load_or_create_similarity_matrix(cache, vectors, print)
+    cache = RomeDenseCache(prepared, f"bge-m3-local-{model_path}", args.source_cache or output / "cache")
+    if args.source_cache:
+        vectors, matrix = cache.load_embeddings(), cache.load_matrix()
+        if vectors is None or matrix is None:
+            raise RuntimeError("Cache dense local absent ou incompatible.")
+        embeddings_cached = matrix_cached = True
+        print(f"BGE-M3 local : cache réutilisé sans chargement du modèle : {cache.embedding_path}")
+    else:
+        print(f"BGE-M3 local : {model_path} (encodage séquentiel, lot 1)")
+        vectors, embeddings_cached = load_or_create_embeddings(cache, _local_dense_encoder(model_path), print)
+        matrix, matrix_cached = load_or_create_similarity_matrix(cache, vectors, print)
     experiment = run_dense_grid(prepared, relations, matrix, progress=print, model_name="bge-m3-local")
     outputs = write_dense_experiment_outputs(
         experiment, prepared, relations, cache, model_path, output,

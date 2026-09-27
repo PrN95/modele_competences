@@ -7,12 +7,18 @@ from src.rome import RomeRelations
 from src.rome_experiment import (
     RemoteOpenAIEmbeddings,
     RomeDenseCache,
+    RomeHybridCache,
     load_or_create_embeddings,
+    load_or_create_hybrid_embeddings,
+    load_or_create_hybrid_similarity_matrices,
     load_or_create_similarity_matrix,
     prepare_rome_corpus,
     rome_campaign_output_directory,
     run_dense_grid,
+    run_hybrid_auc_roc,
+    sparse_weights_to_matrix,
     write_dense_experiment_outputs,
+    write_hybrid_auc_outputs,
 )
 
 
@@ -139,3 +145,55 @@ def test_campaign_output_directory_is_scoped_to_the_new_rome_root() -> None:
     directory = rome_campaign_output_directory("bge_m3_dense_20260913T120000")
 
     assert directory.as_posix() == "outputs/rome/experiments_2/bge_m3_dense_20260913T120000"
+
+
+def test_hybrid_auc_uses_continuous_symmetric_scores_and_marks_best_weight() -> None:
+    prepared, relations = _prepared()
+    dense = np.array([[1, 0], [1, 0], [0, 1], [0, 1], [-1, 0]], dtype=float)
+    sparse = sparse_weights_to_matrix((
+        {"python": 1.0}, {"data": 1.0}, {"python": 1.0}, {"data": 1.0}, {"maconnerie": 1.0},
+    ))
+
+    experiment = run_hybrid_auc_roc(prepared, relations, dense @ dense.T, sparse @ sparse.T, dense_weights=(1.0, 0.0), campaign_id="test", progress=lambda _: None)
+
+    assert list(experiment.summary["auc_roc"]) == [0.75, 1.0]
+    assert len(experiment.best_configurations) == 1
+    assert experiment.best_configurations.iloc[0]["coefficient_sparse"] == 1.0
+    detail = experiment.details[(experiment.details["coefficient_sparse"] == 1.0) & (experiment.details["code_rome_a"] == "M1000") & (experiment.details["code_rome_b"] == "M2000")].iloc[0]
+    assert detail["score_continu_a_vers_b"] == 1.0
+    assert detail["score_continu_b_vers_a"] == 1.0
+    assert detail["score_continu_hybride"] == 1.0
+
+
+def test_hybrid_cache_reuses_dense_sparse_embeddings_and_matrices(tmp_path: Path) -> None:
+    prepared, _ = _prepared()
+    cache = RomeHybridCache(prepared, "bge-m3-local", tmp_path / "cache")
+    calls = 0
+
+    def encoder(texts):
+        nonlocal calls
+        calls += 1
+        return np.array([[1, 0], [0, 1], [1, 0], [0, 1], [-1, 0]], dtype=float), ({"a": 1.0}, {"b": 1.0}, {"a": 1.0}, {"b": 1.0}, {"c": 1.0})
+
+    dense, lexical, cached = load_or_create_hybrid_embeddings(cache, encoder, progress=lambda _: None)
+    assert not cached and calls == 1
+    dense_again, lexical_again, cached = load_or_create_hybrid_embeddings(cache, encoder, progress=lambda _: None)
+    assert cached and calls == 1 and np.array_equal(dense, dense_again)
+    assert (lexical != lexical_again).nnz == 0
+    _, _, cached = load_or_create_hybrid_similarity_matrices(cache, dense, lexical, progress=lambda _: None)
+    assert not cached
+    _, _, cached = load_or_create_hybrid_similarity_matrices(cache, dense, lexical, progress=lambda _: None)
+    assert cached
+
+
+def test_hybrid_outputs_include_auc_report_and_metadata(tmp_path: Path) -> None:
+    prepared, relations = _prepared()
+    dense = np.array([[1, 0], [0, 1], [1, 0], [0, 1], [-1, 0]], dtype=float)
+    sparse = sparse_weights_to_matrix(({"a": 1.0}, {"b": 1.0}, {"a": 1.0}, {"b": 1.0}, {"c": 1.0}))
+    experiment = run_hybrid_auc_roc(prepared, relations, dense @ dense.T, sparse @ sparse.T, dense_weights=(1.0,), campaign_id="test", progress=lambda _: None)
+    cache = RomeHybridCache(prepared, "bge-m3-local", tmp_path / "cache")
+
+    paths = write_hybrid_auc_outputs(experiment, prepared, relations, cache, "models/bge-m3", tmp_path / "resultats", model_name="bge-m3-local", reference_table="reference.xlsx", embeddings_cached=False, matrices_cached=False)
+
+    assert all(path.exists() for path in paths)
+    assert "AUC-ROC" in paths[3].read_text(encoding="utf-8")

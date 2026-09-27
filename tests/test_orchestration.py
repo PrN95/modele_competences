@@ -120,10 +120,13 @@ def test_orchestration_sans_cible_admissible_ne_calcule_aucun_r_epfq() -> None:
     assert resultat_emploi.cibles_retenues == ()
     synthese = construire_synthese_orchestration(resultat)
     assert synthese[0]["R_epfq"] is None
+    assert synthese[0]["Cible_La_Plus_Proche"] == "Emploi cible Q1"
+    assert synthese[0]["Score_Global_Cible_La_Plus_Proche"] == 0.0
     assert construire_details_orchestration(resultat) == []
     matrice = construire_matrice_couples(resultat)
     assert len(matrice) == 2
     assert all(ligne["Statut_Selection"] == "non retenue" for ligne in matrice)
+    assert [ligne["Est_Cible_La_Plus_Proche"] for ligne in matrice] == [True, False]
     assert all(
         ligne["Raison_Non_Selection"] == "couverture inférieure au seuil"
         for ligne in matrice
