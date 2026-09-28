@@ -8,7 +8,7 @@ Un emploi représente toujours un profil type, jamais une personne.
 
 Plusieurs emplois actuels peuvent être associés au même emploi cible. 
 
-L'outils a été développé à avec l'utilisation d'assistant IA (Codex avec GPT - 5.6 Terra).
+L'outils a été développé avec une assistant IA (Extension Codex dans VS Code avec GPT - 5.6 Terra).
 
 Les sources d'instructions pour l’assistance IA sont dans `AGENTS.md` et `docs/Feuille_cadrage_IA.docx`.
 
