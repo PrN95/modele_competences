@@ -1,11 +1,20 @@
 # PoC local de rapprochement des emplois
 
-Ce projet est un outil local d'aide à la décision RH. Pour un emploi actuel, il compare les compétences et les niveaux avec plusieurs emplois cibles, écarte les cibles non admissibles, sélectionne la ou les meilleures et explique les écarts ainsi que les besoins de formation.
+L'outil développé dans ce projet est un **Proof of Concept**, restreint dans son application mais qui a pour objectif de démontrer l’intérêt de l'utilisation des modèles d’embedding pour soutenir l’analyse des compétences en entreprise et guider les décisions RH.
 
-Un emploi représente toujours un profil type, jamais une personne. Plusieurs emplois actuels peuvent être associés au même emploi cible. Les sources d'instructions pour l’assistance IA sont dans `AGENTS.md` et `docs/Feuille_cadrage_IA.docx`.
+Pour chaque emploi actuel du référentiel de l’entreprise, le PoC compare les compétences numériques et les niveaux de maîtrise associés à ceux de plusieurs emplois cibles représentant des évolutions professionnelles possibles. Il identifie le ou les emplois cibles les plus proches, met en évidence les compétences absentes ou insuffisamment maîtrisées et fournit une première indication des besoins de formation correspondants.
+
+Un emploi représente toujours un profil type, jamais une personne. 
+
+Plusieurs emplois actuels peuvent être associés au même emploi cible. 
+
+L'outils a été développé à avec l'utilisation d'assistant IA (Codex avec GPT - 5.6 Terra).
+
+Les sources d'instructions pour l’assistance IA sont dans `AGENTS.md` et `docs/Feuille_cadrage_IA.docx`.
 
 ## Expérimentation ROME
 
+Cette expérimentation évalue les résultats du modèle à partir d’une table de vérité constituée manuellement à partir de paires de fiches emploi issues du référentiel ROME de France Travail.
 Le module `src.rome` prépare un corpus pour les campagnes BGE-M3 et Qwen Embedding, sans modifier le matching de production qui n'obéit pas à la même logique que l'évaluation sur la table de vérité. La table de vérité de référence par défaut est `data/rome/Similarité Emplois ROME 6.xlsx` ; Les relations sont non directionnelles et le code ROME extrait de l'en-tête PDF est la clé de rapprochement.
 
 ```bash
