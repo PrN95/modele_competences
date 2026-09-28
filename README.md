@@ -6,7 +6,7 @@ Un emploi représente toujours un profil type, jamais une personne. Plusieurs em
 
 ## Expérimentation ROME
 
-Le module `src.rome` prépare un corpus pour les campagnes BGE-M3 et Qwen Embedding, sans modifier le matching de production ni l'interface Streamlit. La table de vérité de référence par défaut est `data/rome/Similarité Emplois ROME 6.xlsx` ; les tables antérieures ne sont utilisées que si elles sont explicitement passées en argument. Les relations sont non directionnelles et le code ROME extrait de l'en-tête PDF est la clé de rapprochement.
+Le module `src.rome` prépare un corpus pour les campagnes BGE-M3 et Qwen Embedding, sans modifier le matching de production qui n'obéit pas à la même logique que l'évaluation sur la table de vérité. La table de vérité de référence par défaut est `data/rome/Similarité Emplois ROME 6.xlsx` ; Les relations sont non directionnelles et le code ROME extrait de l'en-tête PDF est la clé de rapprochement.
 
 ```bash
 .venv/bin/python scripts/validate_rome_corpus.py
@@ -77,11 +77,10 @@ L_ac = somme_tokens_communs(x_t × y_t)
 H_ac = poids_dense × D_ac + poids_sparse × L_ac
 ```
 
-`L_ac` est donc une similarité cosinus avec normalisation L2 des vecteurs sparse. Pour chaque compétence cible, le moteur conserve la compétence actuelle ayant le `H_ac` maximal. Une même compétence actuelle peut couvrir plusieurs compétences cibles.
+`L_ac` est une similarité cosinus avec normalisation L2 des vecteurs sparse. Pour chaque compétence cible, le moteur conserve la compétence actuelle ayant le `H_ac` maximal. Une même compétence actuelle peut couvrir plusieurs compétences cibles.
 
-Les valeurs de référence par défaut restent exactement `poids_dense = 2/3` et `poids_sparse = 1/3`. Streamlit permet de modifier les deux poids manuellement et indépendamment pour expérimenter, par exemple avec `0,50 / 0,50` ou `0,80 / 0,20`. Chaque valeur doit être comprise entre `0` et `1` et leur somme doit valoir `1` avec une tolérance numérique adaptée. Une somme invalide affiche une erreur et bloque l'analyse ; aucune normalisation automatique n'est appliquée. Les valeurs utilisées sont affichées et enregistrées dans tous les exports CSV.
+Les valeurs de référence par défaut sont initialement `poids_dense = 2/3` et `poids_sparse = 1/3`. L'interface Streamlit permet de modifier les deux poids manuellement et indépendamment pour expérimenter (par exemple avec `0,50 / 0,50` ou `0,80 / 0,20`). Chaque valeur doit être comprise entre `0` et `1` et leur somme doit valoir `1` avec une tolérance numérique adaptée. Une somme invalide affiche une erreur et bloque l'analyse ; aucune normalisation automatique n'est appliquée. Les valeurs utilisées sont affichées et enregistrées dans tous les exports CSV.
 
-L'intégration réelle de BGE-M3 a été validée manuellement : embeddings denses de dimension 1024, environ 22 secondes pour le premier chargement à froid avec la première inférence, environ 0,86 seconde pour une inférence sur quatre compétences après chargement et environ 1,97 Gio de mémoire maximale observée sans swap.
 
 ## Comparaison expérimentale de trois approches
 
@@ -100,7 +99,7 @@ Streamlit expose deux curseurs distincts :
 - `seuil_sim`, utilisé pour reconnaître une compétence cible ;
 - `seuil_couv`, utilisé pour déterminer l'admissibilité d'un emploi cible.
 
-Leurs valeurs de référence par défaut sont `0,70`, avec un pas de `0,05`. Les valeurs choisies sont transmises au moteur, affichées dans les résultats et conservées dans les exports. Leur calibration sert notamment à étudier le compromis entre faux positifs et faux négatifs.
+Leurs valeurs de référence par défaut sont intialement `0,70`, avec un pas de `0,05`. Les valeurs choisies sont transmises au moteur, affichées dans les résultats et conservées dans les exports. Leur calibration sert notamment à étudier le compromis entre faux positifs et faux négatifs.
 
 Pour un emploi actuel `e` et un emploi cible `f` :
 
@@ -127,7 +126,7 @@ Les emplois cibles dont `G_epfq < seuil_couv` sont exclus. Les cibles admissible
 
 Après triple égalité, toutes les cibles ex aequo sont conservées pour arbitrage RH. Les recommandations sont calculées uniquement après cette sélection et doivent rester limitées aux emplois cibles sélectionnés.
 
-`R_epfq` est un indicateur informatif calculé après la sélection, séparément pour chaque cible retenue. Pour les moteurs d'embedding, chaque compétence actuelle recherche le meilleur `H_ac` parmi les seules compétences de cette cible et est réutilisée si ce score atteint `seuil_sim`. Pour Gemma, elle est réutilisée si elle apparaît dans au moins une correspondance catégorielle `Reconnue` de la cible déjà sélectionnée. Le taux est le nombre de compétences actuelles réutilisées divisé par leur nombre total. Il est affiché en pourcentage et ne participe ni à l'admissibilité, ni au classement, ni au choix d'un emploi cible.
+`R_epfq` est un indicateur informatif calculé après la sélection, séparément pour chaque cible retenue. Le taux est le nombre de compétences actuelles réutilisées divisé par leur nombre total. Il est affiché en pourcentage et ne participe ni à l'admissibilité, ni au classement, ni au choix d'un emploi cible.
 
 ## Interface Streamlit et exports
 
@@ -135,7 +134,7 @@ L'interface Streamlit permet :
 
 - le dépôt séparé de plusieurs PDF d'emplois actuels et de plusieurs PDF d'emplois cibles ;
 - l'analyse globale de tous les emplois actuels contre toutes les cibles ;
-- le modèle BGE-M3 local par défaut, ou un faux encodeur de démonstration explicitement sélectionné ;
+- l'appel au modèle BGE-M3 local par défaut, et aux modèles distants via l'url des endpoints
 - le réglage des deux seuils ;
 - le réglage indépendant de `poids_dense` et `poids_sparse`, avec validation de leur somme avant l'analyse ;
 - le choix entre un seul modèle et la comparaison BGE-M3 / Qwen / Gemma ;
